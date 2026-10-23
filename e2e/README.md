@@ -210,11 +210,11 @@ This section is auto-generated. Do not edit between the markers.
 - `e2e/standalone/terminal.spec.ts:253` — --no-terminal disables new launches but still manages named hook-driven agents (Standalone / terminal disabled)
 - `e2e/standalone/ui.spec.ts:37` — Archive confines one character per cage, persists across reload and releases on restore (Standalone / UI › Archive parking)
 - `e2e/standalone/ui.spec.ts:156` — Large Jail Cage holds five characters without labels, survives reload and frees a position on restore (Standalone / UI › Shared large cage)
-- `e2e/standalone/ui.spec.ts:212` — Debug View shows hook delivery diagnostics (Standalone / UI)
-- `e2e/standalone/ui.spec.ts:240` — adding an external asset directory triggers a live asset reload (Standalone / UI)
-- `e2e/standalone/ui.spec.ts:270` — browser Export Layout downloads the layout file (Standalone / UI)
-- `e2e/standalone/ui.spec.ts:285` — browser Import Layout applies the chosen file (Standalone / UI)
-- `e2e/standalone/ui.spec.ts:320` — ConnectionIndicator appears when the WebSocket connection drops (Standalone / UI)
+- `e2e/standalone/ui.spec.ts:231` — Debug View shows hook delivery diagnostics (Standalone / UI)
+- `e2e/standalone/ui.spec.ts:259` — adding an external asset directory triggers a live asset reload (Standalone / UI)
+- `e2e/standalone/ui.spec.ts:289` — browser Export Layout downloads the layout file (Standalone / UI)
+- `e2e/standalone/ui.spec.ts:304` — browser Import Layout applies the chosen file (Standalone / UI)
+- `e2e/standalone/ui.spec.ts:339` — ConnectionIndicator appears when the WebSocket connection drops (Standalone / UI)
 
 ### `@area:areas` (10 tests)
 

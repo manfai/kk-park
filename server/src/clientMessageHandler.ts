@@ -18,13 +18,14 @@ import {
   type HostDirectoryEntry,
   listDirectories,
 } from './directories.js';
-import { collectDirectorySuggestions } from './directorySuggestions.js';
 import { hostDirectory } from './hostDirectory.js';
 import { readLayoutFromFile, writeLayoutToFile } from './layoutPersistence.js';
 import type { ConsentEffects } from './providers/hook/consentExecutor.js';
 import { applyConsentChoice } from './providers/hook/consentExecutor.js';
 import { hooksConsentRequest } from './providers/hook/consentGate.js';
-import { claudeProvider, hookProviderById, hookProviders } from './providers/index.js';
+import { copilotProvider, hookProviderById } from './providers/index.js';
+import { handleSessionMessage } from './sessionActions.js';
+import { sessionCatalogue } from './sessionCatalog.js';
 import type { PtySessionManager } from './terminal/ptySessionManager.js';
 import { launchStandaloneAgent } from './terminal/standaloneAgentLauncher.js';
 
@@ -133,6 +134,47 @@ export function handleClientMessage(
     return;
   }
 
+  if (
+    runtime &&
+    handleSessionMessage(
+      msg,
+      send,
+      store,
+      runtime,
+      (agent) => {
+        if (!ctx.ptyManager) throw new Error('Terminals are not available in this office.');
+        if (agent.connected) {
+          if (agent.terminalAgentId === undefined || !ctx.ptyManager.has(agent.terminalAgentId))
+            throw new Error(
+              'This session terminal is no longer available. Refresh the session list.',
+            );
+          send({ type: 'terminalSessionOpened', agentId: agent.id });
+          return;
+        }
+        const id = launchStandaloneAgent(
+          { store, runtime, ptyManager: ctx.ptyManager, provider: runtime.provider },
+          {
+            agentId: agent.id,
+            bypassPermissions: adapter?.getSetting(KEY_BYPASS_PERMISSIONS, false) ?? false,
+          },
+        );
+        if (id === null)
+          throw new Error(ctx.ptyManager.unavailableReason() ?? 'Unable to resume this session.');
+      },
+      (agent) => {
+        if (agent.terminalAgentId !== undefined) {
+          if (!ctx.ptyManager) throw new Error('This terminal cannot be stopped here.');
+          ctx.ptyManager.dispose(agent.terminalAgentId);
+        } else if (agent.terminalRef) {
+          throw new Error(
+            'This terminal belongs to the editor and cannot be stopped from this office.',
+          );
+        }
+      },
+    )
+  )
+    return;
+
   switch (msg.type) {
     case 'webviewReady':
       handleWebviewReady(send, ctx);
@@ -147,22 +189,23 @@ export function handleClientMessage(
       // field: the client sends only where to launch. Every launch comes from a
       // drawer row and carries its Directory's path; no directoryPath falls
       // back to the server cwd (launchStandaloneAgent's own default).
-      launchStandaloneAgent(
-        { store, runtime, ptyManager: ctx.ptyManager, provider: claudeProvider },
+      const launched = launchStandaloneAgent(
+        { store, runtime, ptyManager: ctx.ptyManager, provider: runtime.provider },
         {
           directoryPath: msg.directoryPath as string | undefined,
           bypassPermissions: adapter?.getSetting(KEY_BYPASS_PERMISSIONS, false) ?? false,
         },
       );
+      if (launched === null)
+        send({
+          type: 'sessionActionRejected',
+          reason: ctx.ptyManager.unavailableReason() ?? 'Unable to start Copilot CLI.',
+        });
       break;
     }
 
     case 'closeAgent': {
-      // Two shapes now: a PTY-backed agent we launched (kill the process -- the
-      // counterpart of VS Code's terminalRef.dispose()), or an external agent we
-      // merely observed (dismiss the file so the scanner doesn't re-adopt it,
-      // then remove). removeAgent fires agentRemoved, which httpServer maps to
-      // an agentClosed broadcast.
+      // Stop a managed process or disconnect an observed one; retain session identity.
       const id = msg.id as number;
       const agent = store.get(id);
       if (agent && runtime) {
@@ -170,7 +213,7 @@ export function handleClientMessage(
         // both shapes. The PTY's onExit handler does the store cleanup for
         // PTY-backed agents; do it here too so external agents (and a PTY that
         // never exits) are still removed promptly.
-        ctx.ptyManager?.dispose(id);
+        if (agent.terminalAgentId !== undefined) ctx.ptyManager?.dispose(agent.terminalAgentId);
         runtime.closeAgent(id);
       }
       break;
@@ -354,15 +397,12 @@ export function handleClientMessage(
         hostDirectories: () => shownHostDirectoriesFor(ctx),
         broadcast: (message) => store.broadcast(message),
         reply: send,
-        suggestions: () =>
-          collectDirectorySuggestions(claudeProvider, shownHostDirectoriesFor(ctx)),
+        suggestions: () => [],
       });
       break;
 
     default:
-      // focusAgent is handled entirely client-side in standalone (it focuses the
-      // drawer tab, which the server has no say in). exportLayout / importLayout
-      // still require IDE-specific handling.
+      // exportLayout / importLayout require IDE-specific handling.
       break;
   }
 }
@@ -385,10 +425,8 @@ async function applyHooksPreference(
     const installed = await provider.areHooksInstalled();
     if (installed === enabled) {
       setHooksEnabled(provider.id, enabled);
-      // The runtime's single hooksEnabled ref gates the CLAUDE scanners; it
-      // follows only the Claude provider until the scanners grow per-provider
-      // awareness alongside the Settings UI.
-      if (ctx.runtime && provider.id === claudeProvider.id) {
+      // Only the selected provider controls this runtime's detection mode.
+      if (ctx.runtime && provider.id === ctx.runtime.provider.id) {
         ctx.runtime.hooksEnabled.current = enabled;
       }
     }
@@ -425,9 +463,8 @@ function standaloneConsentEffects(
     areHooksInstalled: () => provider.areHooksInstalled(),
     syncHooksPreferenceOff: () => {
       // Durable writes are the executor's own atomic recordHooksDecline; this
-      // only mirrors the live runtime ref the CLAUDE scanners read, so another
-      // provider's answer can never flip Claude's fallback behavior.
-      if (ctx.runtime && provider.id === claudeProvider.id) {
+      // only mirrors the selected runtime's live detection preference.
+      if (ctx.runtime && provider.id === ctx.runtime.provider.id) {
         ctx.runtime.hooksEnabled.current = false;
       }
     },
@@ -448,6 +485,7 @@ function standaloneConsentEffects(
 function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   const { store, runtime, cache } = ctx;
   const adapter = store.getAdapter();
+  const provider = runtime?.provider ?? copilotProvider;
 
   // 0. Access, first: a read-only office hides every control that would send
   // a change (all refused by refuseReadOnly), so it must know before it draws
@@ -457,8 +495,10 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   // 1. Provider capabilities (must arrive before any agent messages)
   send({
     type: 'providerCapabilities',
-    readingTools: [...claudeProvider.readingTools],
-    subagentToolNames: [...claudeProvider.subagentToolNames],
+    providerId: provider.id,
+    displayName: provider.displayName,
+    readingTools: [...provider.readingTools],
+    subagentToolNames: [...provider.subagentToolNames],
   });
 
   // 1b. Terminal availability. Gates the whole terminal UI (the + Agent button
@@ -518,7 +558,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
 
   // 4. Settings (from adapter, with sensible defaults when adapter is absent)
   const cfg = readConfig();
-  const settings = settingsSnapshot(adapter);
+  const settings = settingsSnapshot(adapter, provider);
   const { watchAllSessions, hooksEnabled } = settings;
   send(settings);
 
@@ -527,7 +567,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   // provider checks are async, so these land as follow-ups right after the
   // synchronous handshake; the webview's default (not installed) is the safe
   // assumption until each arrives. One status + at most one ask PER PROVIDER.
-  for (const provider of hookProviders) {
+  for (const provider of [runtime?.provider ?? copilotProvider]) {
     // One provider's unreadable settings file must degrade to
     // installed=false (matching the executor's fail-closed read: no choice
     // ever uninstalls on a guess) rather than surface as an unhandled
@@ -578,24 +618,26 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     });
   }
 
-  // Sync runtime refs with the persisted settings so scanners behave correctly
-  // from the first tick after a server restart.
+  // Sync runtime refs with the persisted adoption preference.
   if (runtime) {
     runtime.watchAllSessions.current = watchAllSessions;
     runtime.hooksEnabled.current = hooksEnabled;
   }
 
-  // 5. Restore persisted external agents (standalone only; VS Code handles its own restore)
-  runtime?.restoreExternalAgents();
-
   // 6. Existing agents (either just restored, or from VS Code adapter if present)
   const agentIds: number[] = [];
   const directoryNames: Record<number, string> = {};
+  const characterNames: Record<number, string> = {};
   const externalAgents: Record<number, boolean> = {};
   const persistedSeats = adapter?.loadSeats() ?? {};
-  const agentMeta: Record<number, { palette?: number; hueShift?: number; seatId?: string }> = {};
+  const agentMeta: Record<
+    number,
+    { palette?: number; hueShift?: number; seatId?: string; archived?: boolean }
+  > = {};
   for (const [id, agent] of store) {
+    if (!agent.characterName) continue;
     agentIds.push(id);
+    characterNames[id] = agent.characterName;
     if (agent.directoryName) {
       directoryNames[id] = agent.directoryName;
     }
@@ -605,6 +647,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     const persisted = persistedSeats[String(id)];
     agentMeta[id] = {
       palette: agent.palette,
+      archived: agent.archived,
       hueShift: agent.hueShift,
       seatId: persisted?.seatId,
     };
@@ -615,6 +658,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     agentMeta,
     directoryNames,
     externalAgents,
+    characterNames,
   });
 
   // 7. Layout last (see step 3): flushes the webview's buffered existingAgents
@@ -634,9 +678,11 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   // terminal is unavailable and could not attach anyway.
   if (ctx.ptyManager && ctx.privileged) {
     for (const id of agentIds) {
-      if (ctx.ptyManager.has(id)) {
+      const terminalId = store.get(id)?.terminalAgentId;
+      if (terminalId !== undefined && ctx.ptyManager.has(terminalId)) {
         send({ type: 'terminalSessionOpened', agentId: id });
       }
+      if (ctx.privileged) send({ ...sessionCatalogue(store) });
     }
   }
 }
@@ -646,7 +692,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
  * client whose setting change was refused (refuseReadOnly), so its optimistic
  * toggle snaps back to the truth.
  */
-function settingsSnapshot(adapter: StateAdapter | undefined) {
+function settingsSnapshot(adapter: StateAdapter | undefined, provider = copilotProvider) {
   return {
     type: 'settingsLoaded',
     soundEnabled: adapter?.getSetting(KEY_SOUND_ENABLED, true) ?? true,
@@ -655,10 +701,8 @@ function settingsSnapshot(adapter: StateAdapter | undefined) {
     watchAllSessions: adapter?.getSetting(KEY_WATCH_ALL_SESSIONS, false) ?? false,
     alwaysShowLabels: adapter?.getSetting(KEY_ALWAYS_SHOW_LABELS, false) ?? false,
     ghostHeadlessAgents: adapter?.getSetting(KEY_GHOST_HEADLESS_AGENTS, false) ?? false,
-    // A single boolean carrying the CLAUDE provider's preference until the
-    // Settings UI grows a per-provider list -- its sole webview reader is the
-    // hooks tooltip gate.
-    hooksEnabled: getHooksEnabled(claudeProvider.id),
+    // The office has one selected provider.
+    hooksEnabled: getHooksEnabled(provider.id),
     hooksInfoShown: adapter?.getSetting(KEY_HOOKS_INFO_SHOWN, false) ?? false,
     externalAssetDirectories: readConfig().externalAssetDirectories,
     showAreas: adapter?.getSetting(KEY_SHOW_AREAS, false) ?? false,
@@ -705,7 +749,7 @@ function refuseReadOnly(
     case 'setShowAreas':
     case 'setBypassPermissions':
     case 'setShowHostDirectories':
-      send(settingsSnapshot(ctx.store.getAdapter()));
+      send(settingsSnapshot(ctx.store.getAdapter(), ctx.runtime?.provider));
       return;
     case 'addExternalAssetDirectory':
     case 'removeExternalAssetDirectory':

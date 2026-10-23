@@ -9,12 +9,8 @@ interface AgentDiagnostics {
   id: number;
   projectDir: string;
   projectDirExists: boolean;
-  jsonlFile: string;
-  jsonlExists: boolean;
-  fileSize: number;
-  fileOffset: number;
   lastDataAt: number;
-  linesProcessed: number;
+  hookDelivered: boolean;
 }
 
 interface DebugViewProps {
@@ -156,23 +152,18 @@ export function DebugView({
         {diag && (
           <div className="mt-6 py-4 px-6 text-xs opacity-70 flex flex-col gap-2 border-t border-white/8">
             <span>
-              <span className={diag.jsonlExists ? 'text-status-success' : 'text-status-error'}>
-                {diag.jsonlExists ? 'JSONL connected' : 'JSONL not found'}
+              <span
+                className={diag.hookDelivered ? 'text-status-success' : 'text-status-permission'}
+              >
+                {diag.hookDelivered ? 'Hooks received' : 'Awaiting hooks'}
               </span>
-              {' | '}
-              Lines: {diag.linesProcessed}
               {' | '}
               Last data: {formatTimeAgo(diag.lastDataAt)}
             </span>
-            <span className="opacity-60 text-2xs break-all">{diag.jsonlFile}</span>
+            <span className="opacity-60 text-2xs break-all">{diag.projectDir}</span>
             {!diag.projectDirExists && (
               <span className="text-2xs text-status-error">
                 Project dir does not exist: {diag.projectDir}
-              </span>
-            )}
-            {diag.jsonlExists && diag.fileSize > 0 && diag.linesProcessed === 0 && (
-              <span className="text-2xs text-status-permission">
-                File has data ({diag.fileSize} bytes) but 0 lines parsed. Possible format issue.
               </span>
             )}
           </div>

@@ -14,24 +14,19 @@
 /** Persisted agent data (survives F5 reload / restart) */
 export interface PersistedAgent {
   id: number;
+  providerId?: string;
+  hooksOnly?: boolean;
+  launchSessionId?: string;
   sessionId?: string;
+  characterName?: string;
+  archived?: boolean;
   terminalName: string;
   isExternal?: boolean;
-  jsonlFile: string;
   projectDir: string;
   directoryName?: string;
   /** Pre-Directory spelling of `directoryName`, written by releases up to
    *  v1.4.x. Read as a fallback on restore; never written. */
   folderName?: string;
-  teamName?: string;
-  agentName?: string;
-  isTeamLead?: boolean;
-  leadAgentId?: number;
-  teamUsesTmux?: boolean;
-  /** Live background-spawn tool ids on a lead. Persisted so the spawns'
-   *  transcripts are re-adopted after a reload; the spawned children
-   *  themselves are derived state and never persisted. */
-  backgroundAgentToolIds?: string[];
   /** Preferred character palette (0-5). Persisted so colors stay stable
    *  across server restarts; assignPaletteIfNeeded is a no-op on restore. */
   palette?: number;

@@ -16,6 +16,7 @@ export interface ExistingAgentMeta {
   palette?: number;
   hueShift?: number;
   seatId?: string;
+  archived?: boolean;
 }
 
 /** An agent buffered until the layout (and its seats) has been built. */
@@ -26,6 +27,7 @@ export interface PendingAgent {
   seatId?: string;
   directoryName?: string;
   isHeadless?: boolean;
+  archived?: boolean;
 }
 
 /** Minimal structural view of OfficeState this reconciler needs. */
@@ -40,6 +42,7 @@ export interface ExistingAgentsOffice {
     directoryName?: string,
   ) => void;
   setHeadless: (id: number, headless: boolean) => void;
+  setAgentArchived: (id: number, archived: boolean) => void;
 }
 
 /**
@@ -68,6 +71,7 @@ export function reconcileExistingAgents(
       seatId: m?.seatId,
       directoryName: directoryNames[id],
       isHeadless: headlessAgents[id] === true,
+      ...(m?.archived ? { archived: true } : {}),
     };
     if (layoutReady) {
       if (!os.characters.has(p.id)) {
@@ -75,6 +79,7 @@ export function reconcileExistingAgents(
         if (p.isHeadless) os.setHeadless(p.id, true);
         addedDirectly = true;
       }
+      os.setAgentArchived(p.id, p.archived === true);
     } else {
       pending.push(p);
     }

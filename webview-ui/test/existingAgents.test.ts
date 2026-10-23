@@ -55,6 +55,7 @@ function fakeOffice(
     setHeadless: (id, isHeadless) => {
       if (isHeadless) headless.push(id);
     },
+    setAgentArchived: () => {},
   };
 }
 

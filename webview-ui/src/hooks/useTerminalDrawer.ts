@@ -2,6 +2,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { AgentActivity, AgentAppearance, TabStatus } from '../components/AgentCard.js';
+import { exactTerminalId } from '../components/sessionManager.js';
 import {
   TERMINAL_DRAWER_DEFAULT_WIDTH_PX,
   TERMINAL_DRAWER_MAX_WIDTH_RATIO,
@@ -23,13 +24,13 @@ interface TerminalDrawerInputs {
   agentStatuses: Record<number, string>;
   agentAwaitingInput: Record<number, boolean>;
   agentSeenActivity: Record<number, boolean>;
+  agentCharacterNames: Record<number, string>;
 }
 
 export interface TerminalDrawerController {
   activeAgentId: number | null;
-  /** The pane actually showing: the active agent's, or the first terminal
-   *  when the active agent has no PTY (an external session's character was
-   *  clicked). null only when there are no terminals. Both shells and the
+  /** The pane actually showing: only the active agent's exact terminal,
+   *  or null when that session has no managed terminal. Both shells and the
    *  mobile key bar read this one resolution. */
   shownAgentId: number | null;
   isOpen: boolean;
@@ -81,6 +82,7 @@ export function useTerminalDrawer({
   agentStatuses,
   agentAwaitingInput,
   agentSeenActivity,
+  agentCharacterNames,
 }: TerminalDrawerInputs): TerminalDrawerController {
   const [activeAgentId, setActiveAgentId] = useState<number | null>(null);
   const [lastOpened, setLastOpened] = useState<{ agentId: number; seq: number } | null>(null);
@@ -98,10 +100,7 @@ export function useTerminalDrawer({
   const widthPx = clampDrawerWidth(preferredWidthPx, viewportPx);
   const [connStatuses, setConnStatuses] = useState<Record<number, TerminalConnectionStatus>>({});
 
-  const shownAgentId =
-    activeAgentId !== null && terminalAgentIds.includes(activeAgentId)
-      ? activeAgentId
-      : (terminalAgentIds[0] ?? null);
+  const shownAgentId = exactTerminalId(activeAgentId, terminalAgentIds);
 
   // Reveal a newly-opened terminal. Launching is async — the toolbar sends
   // launchAgent and the server answers with terminalSessionOpened once the PTY
@@ -121,9 +120,8 @@ export function useTerminalDrawer({
 
   const reveal = useCallback(
     (agentId: number) => {
-      if (!terminalAgentIds.includes(agentId)) return;
       setActiveAgentId(agentId);
-      setIsOpen(true);
+      if (terminalAgentIds.includes(agentId)) setIsOpen(true);
     },
     [terminalAgentIds],
   );
@@ -170,9 +168,13 @@ export function useTerminalDrawer({
   const getAppearance = useCallback(
     (id: number): AgentAppearance => {
       const ch = getOfficeState().characters.get(id);
-      return ch ? { palette: ch.palette, hueShift: ch.hueShift } : DEFAULT_APPEARANCE;
+      return {
+        ...(ch ? { palette: ch.palette, hueShift: ch.hueShift } : DEFAULT_APPEARANCE),
+        characterName: agentCharacterNames[id],
+        archived: ch?.isArchived,
+      };
     },
-    [getOfficeState],
+    [getOfficeState, agentCharacterNames],
   );
 
   // Activity for the tab status dot (green idle / blue working / yellow needs

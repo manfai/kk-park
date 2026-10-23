@@ -12,7 +12,7 @@
 //             tailing BOTH the test log and the external log.
 // - external: legacy magenta header (external-only framing).
 // - test    : legacy yellow header (test-only framing).
-// - none    : no header at all — used inside mock-claude tabs, where the runner
+// - none    : no header at all — used inside mock-copilot tabs, where the runner
 //             prints its own banner and the tail just interleaves the narration.
 'use strict';
 
@@ -38,13 +38,13 @@ const STYLES = {
     title: 'e2e monitor',
     sub:
       'yellow [test] = actions + checks from the Playwright test · ' +
-      'magenta [external·tag] = detached mock claude sessions · cosmetic only',
+      'magenta [external·tag] = detached mock copilot sessions · cosmetic only',
   },
   external: {
     color: '\u001b[35m', // magenta — matches the [external·tag] line prefix
     title: 'external sessions monitor',
     sub:
-      'streams narration from mock claude processes that Pixel Agents adopts\n' +
+      'streams narration from mock copilot processes that Pixel Agents adopts\n' +
       '(external sessions have no terminal of their own)',
   },
   test: {

@@ -1,579 +1,441 @@
-/**
- * AgentRuntime: shared agent lifecycle core for VS Code and standalone modes.
- *
- * Owns all infrastructure that both PixelAgentsViewProvider (VS Code) and the
- * standalone CLI need: timer Maps, file watchers, HookEventHandler, DismissalTracker,
- * session scanning, and agent removal. Adapters (VS Code, CLI) create an instance
- * and register platform-specific lifecycle callbacks.
- *
- * This is the single source of truth for agent lifecycle wiring. No duplication.
- */
-
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import type { HookProvider } from '../../core/src/provider.js';
+import type { AgentEvent, HookProvider } from '../../core/src/provider.js';
+import { resendAgentActivity } from './agentActivityResend.js';
 import { createAgentState } from './agentState.js';
 import type { AgentStateStore } from './agentStateStore.js';
-import { DismissalTracker } from './dismissalTracker.js';
-import {
-  adoptExternalSessionFromHook,
-  ensureProjectScan,
-  isTrackedProjectDir,
-  reassignAgentToFile,
-  scanForBackgroundAgentFiles,
-  scanForTeammateFiles,
-  setAgentRemovalCallback,
-  setDismissalTracker,
-  setHookProvider as setFileWatcherHookProvider,
-  setSubagentWatch,
-  setTeammateRegisterCallback,
-  setTeammateRemovalCallback,
-  setTeamProvider,
-  startExternalSessionScanning,
-  startFileWatching,
-  startStaleExternalAgentCheck,
-} from './fileWatcher.js';
-import type { HookEvent } from './hookEventHandler.js';
-import { HookEventHandler } from './hookEventHandler.js';
+import { CHARACTER_NAME_MAX_LENGTH } from './constants.js';
+import { directoryNameForLaunch } from './directories.js';
 import { assignPaletteIfNeeded } from './paletteAssigner.js';
-import { PathSet, pathsMatch } from './pathKey.js';
-import { SessionRouter } from './sessionRouter.js';
-import { SubagentWatch } from './subagentWatch.js';
-import { cancelPermissionTimer, cancelWaitingTimer } from './timerManager.js';
-import {
-  setBackgroundAgentCompletedCallback,
-  setBackgroundAgentDetectedCallback,
-  setHookProvider,
-  setTeamSwitchCallback,
-} from './transcriptParser.js';
+import { toPathKey } from './pathKey.js';
+import { copilotProvider } from './providers/index.js';
+import { sessionStatus } from './sessionCatalog.js';
 import type { AgentState } from './types.js';
 
-/** Callbacks that adapters register for platform-specific behavior. */
 export interface RuntimeLifecycleCallbacks {
-  /** Called after an agent is removed. Adapters use this to dismiss JSONL files, etc. */
   onAgentRemoved?: (agentId: number, agent: AgentState) => void;
-  /** Called when a teammate is removed. */
-  onTeammateRemoved?: (teammateId: number, agent: AgentState, source: string) => void;
+  directoryNameFor?: (cwd: string) => string | undefined;
 }
 
+/** Shared, hooks-only lifecycle for agents launched or adopted by either adapter. */
 export class AgentRuntime {
-  // Per-agent timer Maps (shared by all fileWatcher/hookEventHandler operations)
-  readonly fileWatchers = new Map<number, fs.FSWatcher>();
-  readonly pollingTimers = new Map<number, ReturnType<typeof setInterval>>();
-  readonly waitingTimers = new Map<number, ReturnType<typeof setTimeout>>();
-  readonly permissionTimers = new Map<number, ReturnType<typeof setTimeout>>();
-  readonly jsonlPollTimers = new Map<number, ReturnType<typeof setInterval>>();
-
-  // Scanning state. PathSet (not Set) so a transcript adopted via hooks is still
-  // recognized as known when a scanner rebuilds the path from the workspace folder
-  // -- the two spellings differ by drive-letter case on Windows.
-  readonly knownJsonlFiles = new PathSet();
-  readonly projectScanTimer = { current: null as ReturnType<typeof setInterval> | null };
   readonly activeAgentId = { current: null as number | null };
-  private externalScanTimer: ReturnType<typeof setInterval> | null = null;
-  private staleCheckTimer: ReturnType<typeof setInterval> | null = null;
-
-  // Configuration refs (mutable, shared with scanners)
   readonly watchAllSessions = { current: false };
   readonly hooksEnabled = { current: true };
-
-  // Dependencies
-  readonly dismissalTracker = new DismissalTracker();
-  /** Shadow-store watcher for unnamed background spawns (sub-agents). */
-  readonly subagentWatch: SubagentWatch;
-  private hookEventHandler: HookEventHandler;
-  private lifecycleCallbacks: RuntimeLifecycleCallbacks = {};
+  private readonly sessions = new Map<string, number>();
+  private readonly dismissedSessions = new Set<string>();
+  private readonly workingDirectories = new Set<string>();
+  private callbacks: RuntimeLifecycleCallbacks = {};
+  private readonly openingSessions = new Map<number, Promise<void>>();
+  private readonly archivingSessions = new Set<number>();
 
   constructor(
     private readonly store: AgentStateStore,
-    provider: HookProvider,
+    readonly provider: HookProvider = copilotProvider,
   ) {
-    // Wire module-level dependencies
-    setDismissalTracker(this.dismissalTracker);
-    setHookProvider(provider);
-    setFileWatcherHookProvider(provider);
-    this.subagentWatch = new SubagentWatch(store);
-    setSubagentWatch(this.subagentWatch);
-    if (provider.team) {
-      setTeamProvider(provider.team);
-    }
-    setAgentRemovalCallback((id) => this.removeAgent(id));
-    setTeammateRemovalCallback((id) => this.removeTeammate(id, 'team-config'));
-    // New-style teammates run their own sessions; registering routes their hook
-    // events (PreToolUse, Stop, SessionEnd) directly to the teammate agent.
-    setTeammateRegisterCallback((sessionId, agentId) => this.registerAgent(sessionId, agentId));
-    // Background spawns (teams OFF): classify by sidecar name on spawn (named
-    // -> teammate character, unnamed -> shadow-watched sub-agent), remove when
-    // the completion queue-operation lands on the lead.
-    setBackgroundAgentDetectedCallback((leadId) => {
-      scanForBackgroundAgentFiles(
-        leadId,
-        this.store,
-        this.store.nextAgentId,
-        this.fileWatchers,
-        this.pollingTimers,
-        this.waitingTimers,
-        this.permissionTimers,
-        () => this.store.persist(),
-        undefined,
-      );
-    });
-    setBackgroundAgentCompletedCallback((leadId, toolUseId) => {
-      for (const [id, agent] of this.store) {
-        if (agent.leadAgentId === leadId && agent.spawnToolUseId === toolUseId) {
-          this.removeTeammate(id, 'background-complete');
-          break;
-        }
-      }
-      // Unnamed spawns live in the shadow store; the webview sub-character is
-      // cleared by the lead-side queue-op subagentClear, not by this call.
-      this.subagentWatch.removeBySpawn(leadId, toolUseId);
-    });
-    // A resumed lead that spawns again belongs to a freshly minted implicit
-    // team; its previous team's teammates are defunct. Promoted anonymous
-    // background agents (leadAgentId but no teamName) are left untouched.
-    setTeamSwitchCallback((leadId, previousTeamName) => {
-      const stale = [...this.store].filter(
-        ([, a]) => a.leadAgentId === leadId && a.teamName === previousTeamName,
-      );
-      for (const [id] of stale) {
-        this.removeTeammate(id, 'team-switch');
+    store.batchSessions(() => {
+      for (const saved of store.loadPersistedAgents()) {
+        if (
+          !saved ||
+          saved.providerId !== provider.id ||
+          typeof saved.sessionId !== 'string' ||
+          !saved.sessionId ||
+          !Number.isSafeInteger(saved.id) ||
+          saved.id < 1 ||
+          store.has(saved.id) ||
+          [...store.values()].some((agent) => agent.sessionId === saved.sessionId)
+        )
+          continue;
+        store.set(
+          saved.id,
+          createAgentState({
+            id: saved.id,
+            sessionId: saved.sessionId,
+            archived: saved.archived === true || undefined,
+            projectDir: typeof saved.projectDir === 'string' ? saved.projectDir : '',
+            isExternal: true,
+            characterName:
+              typeof saved.characterName === 'string'
+                ? saved.characterName.trim() || undefined
+                : undefined,
+            directoryName: saved.directoryName ?? saved.folderName,
+            palette: saved.palette,
+            hueShift: saved.hueShift,
+          }),
+        );
+        this.registerAgent(saved.sessionId, saved.id);
+        store.nextAgentId.current = Math.max(store.nextAgentId.current, saved.id + 1);
       }
     });
+  }
 
-    this.hookEventHandler = new HookEventHandler(
-      store,
-      this.waitingTimers,
-      this.permissionTimers,
-      provider,
-      new SessionRouter(),
-      this.watchAllSessions,
-    );
-
-    // Wire hook lifecycle callbacks to shared agent operations
-    this.hookEventHandler.setLifecycleCallbacks({
-      onExternalSessionDetected: (sessionId, transcriptPath, cwd) => {
-        const projectDir = transcriptPath ? path.dirname(transcriptPath) : cwd;
-        // Teammate session of a tracked lead? Attach it as a teammate character
-        // instead of adopting a generic external agent -- and regardless of the
-        // Watch All Sessions setting: tracking the lead is the opt-in for its
-        // team. (Newer harnesses run every spawned agent as an independent
-        // top-level session that fires its own hooks.)
-        if (transcriptPath) {
-          const teamMeta = provider.team?.getTeamMetadataForSession(transcriptPath);
-          if (teamMeta?.teamName && teamMeta.agentName) {
-            for (const [leadId, lead] of this.store) {
-              if (lead.teamName !== teamMeta.teamName || lead.leadAgentId !== undefined) continue;
-              console.log(
-                `[Pixel Agents] Hook: session ${sessionId.slice(0, 8)}... is teammate "${teamMeta.agentName}" of Agent ${leadId}, attaching`,
-              );
-              scanForTeammateFiles(
-                lead.projectDir,
-                lead.sessionId,
-                leadId,
-                this.store.nextAgentId,
-                this.store,
-                this.fileWatchers,
-                this.pollingTimers,
-                this.waitingTimers,
-                this.permissionTimers,
-                () => this.store.persist(),
-                undefined,
-              );
-              break;
-            }
-            // Done only if discovery actually adopted this transcript. Old-style
-            // tmux teammates (non-UUID transcript names outside discovery's scan)
-            // fall through to normal external adoption and self-identify from
-            // their record tags.
-            for (const a of this.store.values()) {
-              if (pathsMatch(a.jsonlFile, transcriptPath)) return;
-            }
+  refreshSessions(): void {
+    this.store.batchSessions(() => {
+      for (const session of this.provider.discoverSessions?.() ?? []) {
+        const existing = [...this.store.values()].find(
+          (agent) => agent.sessionId === session.sessionId,
+        );
+        if (existing) {
+          if (!existing.projectDir && session.cwd) {
+            existing.projectDir = session.cwd;
+            existing.directoryName =
+              this.callbacks.directoryNameFor?.(session.cwd) ?? path.basename(session.cwd);
           }
+          continue;
         }
-        if (!isTrackedProjectDir(projectDir) && !this.watchAllSessions.current) {
-          console.log(
-            `[Pixel Agents] Hook: external session ${sessionId.slice(0, 8)}... not adopted ` +
-              `(project untracked, Watch All Sessions off)`,
-          );
+        this.addSession(session.sessionId, session.cwd ?? '');
+      }
+      this.store.persist();
+      this.store.notifySessionsChanged();
+    });
+  }
+
+  private addSession(sessionId: string, cwd: string): AgentState {
+    const id = this.store.nextAgentId.current++;
+    const agent = createAgentState({
+      id,
+      sessionId,
+      projectDir: cwd,
+      isExternal: true,
+      directoryName: cwd
+        ? (this.callbacks.directoryNameFor?.(cwd) ??
+          directoryNameForLaunch(cwd, []) ??
+          path.basename(cwd))
+        : undefined,
+    });
+    assignPaletteIfNeeded(agent, this.store);
+    this.store.set(id, agent);
+    this.registerAgent(sessionId, id);
+    return agent;
+  }
+
+  nameSession(id: number, input: unknown): void {
+    if (!this.store.has(id)) throw new Error('This session is no longer available.');
+    if (
+      typeof input !== 'string' ||
+      input.trim().length > CHARACTER_NAME_MAX_LENGTH ||
+      /[\u0000-\u001f\u007f]/.test(input)
+    )
+      throw new Error(
+        `Use a character name of at most ${CHARACTER_NAME_MAX_LENGTH} characters without control characters.`,
+      );
+    this.store.setCharacterName(id, input.trim());
+    resendAgentActivity((message) => this.store.broadcast(message), this.store, id);
+    const agent = this.store.get(id);
+    if (agent?.characterName && agent.connected && agent.terminalAgentId !== undefined)
+      this.store.broadcast({ type: 'terminalSessionOpened', agentId: id });
+  }
+
+  async openSession(id: number, open: (agent: AgentState) => void | Promise<void>): Promise<void> {
+    if (this.archivingSessions.has(id))
+      throw new Error('Wait for this session to finish archiving.');
+    const agent = this.store.get(id);
+    if (!agent) throw new Error('This session is no longer available.');
+    if (!agent.characterName)
+      throw new Error('Give this session a character name before opening it.');
+    if (agent.connected && !agent.terminalRef && agent.terminalAgentId === undefined)
+      throw new Error(
+        'This session is running outside Pixel Agents. Its terminal cannot be controlled here.',
+      );
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(agent.sessionId))
+      throw new Error('This session ID cannot be safely resumed.');
+    if (!agent.connected) {
+      if (!path.isAbsolute(agent.projectDir))
+        throw new Error('The session working directory is unknown. It cannot be resumed here.');
+      let isDirectory = false;
+      try {
+        isDirectory = fs.statSync(agent.projectDir).isDirectory();
+      } catch (err) {
+        console.warn('[Pixel Agents] Cannot access session working directory:', err);
+      }
+      if (!isDirectory) throw new Error('The session working directory is no longer available.');
+    }
+    const pending = this.openingSessions.get(id);
+    if (pending) return pending;
+    const opening = Promise.resolve().then(async () => {
+      await open(agent);
+      if (agent.archived) {
+        this.store.setArchived(id, false);
+        if (agent.terminalAgentId !== undefined)
+          this.store.broadcast({ type: 'terminalSessionOpened', agentId: id });
+        resendAgentActivity((message) => this.store.broadcast(message), this.store, id);
+      }
+    });
+    this.openingSessions.set(id, opening);
+    try {
+      await opening;
+    } finally {
+      this.openingSessions.delete(id);
+    }
+  }
+
+  async setSessionArchived(
+    id: number,
+    archived: unknown,
+    stop?: (agent: AgentState) => void | Promise<void>,
+  ): Promise<void> {
+    const agent = this.store.get(id);
+    if (!agent?.characterName) throw new Error('Choose a named character to archive or restore.');
+    if (typeof archived !== 'boolean') throw new Error('Choose a valid archive state.');
+    if (this.archivingSessions.has(id) || this.openingSessions.has(id))
+      throw new Error('Wait for the current session action to finish.');
+    if (!!agent.archived === archived) return;
+    const managed = !!agent.terminalRef || agent.terminalAgentId !== undefined;
+    if (archived && managed && !stop) throw new Error('This terminal cannot be stopped here.');
+    this.archivingSessions.add(id);
+    try {
+      this.store.setArchived(id, archived);
+      if (archived && managed && stop) {
+        try {
+          await stop(agent);
+        } catch (error) {
+          this.store.setArchived(id, false);
+          throw error;
+        }
+        this.closeAgent(id);
+      }
+      if (!archived)
+        resendAgentActivity((message) => this.store.broadcast(message), this.store, id);
+    } finally {
+      this.archivingSessions.delete(id);
+    }
+  }
+
+  disconnectTerminal(terminalAgentId: number): void {
+    for (const agent of this.store.values())
+      if (agent.terminalAgentId === terminalAgentId) this.closeAgent(agent.id);
+  }
+
+  setLifecycleCallbacks(callbacks: RuntimeLifecycleCallbacks): void {
+    this.callbacks = callbacks;
+  }
+
+  registerAgent(sessionId: string, agentId: number): void {
+    this.dismissedSessions.delete(sessionId);
+    this.sessions.set(sessionId, agentId);
+  }
+
+  unregisterAgent(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+
+  trackWorkingDirectory(directory: string): void {
+    try {
+      this.workingDirectories.add(toPathKey(fs.realpathSync(directory)));
+    } catch (err) {
+      console.warn('[Pixel Agents] Cannot track working directory:', err);
+    }
+  }
+
+  setWorkingDirectories(directories: readonly string[]): void {
+    this.workingDirectories.clear();
+    for (const directory of directories) this.trackWorkingDirectory(directory);
+  }
+
+  isTrackedWorkingDirectory(directory: string): boolean {
+    let candidate: string;
+    try {
+      candidate = toPathKey(fs.realpathSync(directory));
+    } catch (err) {
+      console.warn('[Pixel Agents] Cannot resolve hook working directory:', err);
+      return false;
+    }
+    return [...this.workingDirectories].some((tracked) => {
+      const relative = path.relative(tracked, candidate);
+      return (
+        relative === '' ||
+        (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+      );
+    });
+  }
+
+  handleHookEvent(providerId: string, raw: Record<string, unknown>): void {
+    if (providerId !== this.provider.id || this.provider.protocolVersion !== 1) return;
+    const normalized = this.provider.normalizeHookEvent(raw);
+    if (!normalized) return;
+    const { sessionId, event } = normalized;
+    if (event.kind === 'sessionStart') this.dismissedSessions.delete(sessionId);
+    else if (this.dismissedSessions.has(sessionId)) return;
+    let agent =
+      this.store.get(this.sessions.get(sessionId) ?? -1) ??
+      [...this.store.values()].find((candidate) => candidate.sessionId === sessionId);
+    if (
+      event.kind !== 'sessionStart' &&
+      agent?.launchSessionId &&
+      typeof raw.launch_session_id === 'string' &&
+      raw.launch_session_id !== agent.launchSessionId
+    )
+      return;
+    const isNew = !agent;
+
+    if (!agent) {
+      if (event.kind === 'sessionEnd' || typeof raw.cwd !== 'string') return;
+      const owned =
+        event.kind === 'sessionStart' &&
+        event.launchSessionId &&
+        [...this.store.values()].some(
+          (candidate) => candidate.launchSessionId === event.launchSessionId,
+        );
+      if (!owned && !this.watchAllSessions.current && !this.isTrackedWorkingDirectory(raw.cwd))
+        return;
+      agent = this.addSession(sessionId, raw.cwd);
+    }
+    const previousStatus = sessionStatus(agent);
+    const cwdChanged = typeof raw.cwd === 'string' && !!raw.cwd && agent.projectDir !== raw.cwd;
+    if (event.kind === 'sessionStart' && event.launchSessionId) {
+      const owner = [...this.store.values()].find(
+        (candidate) =>
+          candidate.id !== agent.id &&
+          candidate.launchSessionId === event.launchSessionId &&
+          (candidate.terminalRef || candidate.terminalAgentId !== undefined),
+      );
+      if (owner) {
+        const { terminalRef, terminalAgentId } = owner;
+        this.closeAgent(owner.id);
+        agent.terminalRef = terminalRef;
+        agent.terminalAgentId = terminalAgentId;
+        agent.launchSessionId = event.launchSessionId;
+        agent.isExternal = false;
+        if (terminalAgentId !== undefined)
+          this.store.broadcast({ type: 'terminalSessionOpened', agentId: agent.id });
+      }
+    }
+    this.registerAgent(sessionId, agent.id);
+    agent.connected = true;
+    if (cwdChanged && typeof raw.cwd === 'string') {
+      agent.projectDir = raw.cwd;
+      agent.directoryName =
+        this.callbacks.directoryNameFor?.(raw.cwd) ??
+        directoryNameForLaunch(raw.cwd, []) ??
+        path.basename(raw.cwd);
+    }
+    agent.hookDelivered = true;
+    agent.lastDataAt = Date.now();
+    this.dispatch(agent, event);
+    if (isNew || cwdChanged || event.kind === 'sessionStart') this.store.persist();
+    if (isNew || cwdChanged || previousStatus !== sessionStatus(agent))
+      this.store.notifySessionsChanged();
+  }
+
+  private dispatch(agent: AgentState, event: AgentEvent): void {
+    const id = agent.id;
+    switch (event.kind) {
+      case 'sessionStart':
+        return;
+      case 'sessionEnd':
+        if (agent.terminalRef || agent.terminalAgentId !== undefined) this.markWaiting(agent);
+        else this.closeAgent(id);
+        return;
+      case 'turnStart':
+        this.clearTools(agent);
+        this.markActive(agent);
+        return;
+      case 'toolStart': {
+        this.clearPermission(agent);
+        this.markActive(agent);
+        const groups = (agent.hookToolGroups ??= new Map());
+        const existing = groups.get(event.toolId);
+        if (existing) {
+          existing.count++;
           return;
         }
-        adoptExternalSessionFromHook(
-          sessionId,
-          transcriptPath,
-          cwd,
-          this.knownJsonlFiles,
-          this.store.nextAgentId,
-          this.store,
-          this.fileWatchers,
-          this.pollingTimers,
-          this.waitingTimers,
-          this.permissionTimers,
-          () => this.store.persist(),
-          (agent) => this.registerAgent(agent.sessionId, agent.id),
-        );
-      },
-      onSessionClear: (agentId, newSessionId, newTranscriptPath) => {
-        if (newTranscriptPath) {
-          this.knownJsonlFiles.add(newTranscriptPath);
-          reassignAgentToFile(
-            agentId,
-            newTranscriptPath,
-            this.store,
-            this.fileWatchers,
-            this.pollingTimers,
-            this.waitingTimers,
-            this.permissionTimers,
-            () => this.store.persist(),
-          );
-        }
-        const agent = this.store.get(agentId);
-        if (agent) {
-          this.unregisterAgent(agent.sessionId);
-          agent.sessionId = newSessionId;
-          this.registerAgent(agent.sessionId, agent.id);
-        }
-      },
-      onSessionResume: (transcriptPath) => {
-        this.dismissalTracker.clearDismissal(transcriptPath);
-        this.dismissalTracker.clearSeededMtime(transcriptPath);
-        this.knownJsonlFiles.delete(transcriptPath);
-      },
-      onTeammateDetected: (parentAgentId, sessionId, _agentType) => {
-        const parentAgent = this.store.get(parentAgentId);
-        if (!parentAgent) return;
-        scanForTeammateFiles(
-          parentAgent.projectDir,
-          sessionId,
-          parentAgentId,
-          this.store.nextAgentId,
-          this.store,
-          this.fileWatchers,
-          this.pollingTimers,
-          this.waitingTimers,
-          this.permissionTimers,
-          () => this.store.persist(),
-          // Don't register inline teammates: they share the lead's sessionId
-          // and registering them would overwrite the lead in the session router.
-          undefined,
-        );
-      },
-      onTeammateRemoved: (teammateAgentId) => {
-        this.removeTeammate(teammateAgentId, 'hooks');
-      },
-      onSessionEnd: (agentId) => {
-        const agent = this.store.get(agentId);
-        if (!agent) return;
-        this.dismissalTracker.clearSeededMtime(agent.jsonlFile);
-        this.dismissalTracker.dismiss(agent.jsonlFile);
-        // Covers real team leads AND leads of background teammates (which
-        // have children but no teamName). No-op when childless.
-        this.removeTeammates(agentId);
-        // Unnamed background spawns die with their lead's session too.
-        this.subagentWatch.removeByLead(agentId);
-        if (agent.isExternal) {
-          this.unregisterAgent(agent.sessionId);
-          this.removeAgent(agentId);
-        }
-      },
-    });
+        const toolId = `${event.toolId}:${randomUUID()}`;
+        groups.set(event.toolId, { toolId, count: 1 });
+        const status = this.provider.formatToolStatus(event.toolName, event.input);
+        agent.activeToolIds.add(toolId);
+        agent.activeToolStatuses.set(toolId, status);
+        agent.activeToolNames.set(toolId, event.toolName);
+        this.store.broadcast({
+          type: 'agentToolStart',
+          id,
+          toolId,
+          status,
+          toolName: event.toolName,
+        });
+        return;
+      }
+      case 'toolEnd': {
+        this.clearPermission(agent);
+        if (event.resumesTurn && agent.awaitingInput) this.markActive(agent);
+        const group = agent.hookToolGroups?.get(event.toolId);
+        if (!group || --group.count > 0) return;
+        agent.hookToolGroups?.delete(event.toolId);
+        agent.activeToolIds.delete(group.toolId);
+        agent.activeToolStatuses.delete(group.toolId);
+        agent.activeToolNames.delete(group.toolId);
+        this.store.broadcast({ type: 'agentToolDone', id, toolId: group.toolId });
+        return;
+      }
+      case 'permissionRequest':
+        agent.permissionSent = true;
+        this.store.broadcast({ type: 'agentToolPermission', id });
+        return;
+      case 'turnEnd':
+        this.markWaiting(agent, event.awaitingInput);
+        return;
+    }
   }
 
-  /** Register adapter-specific lifecycle callbacks. */
-  setLifecycleCallbacks(callbacks: RuntimeLifecycleCallbacks): void {
-    this.lifecycleCallbacks = callbacks;
+  private clearTools(agent: AgentState): void {
+    agent.activeToolIds.clear();
+    agent.activeToolStatuses.clear();
+    agent.activeToolNames.clear();
+    agent.hookToolGroups?.clear();
+    this.store.broadcast({ type: 'agentToolsClear', id: agent.id });
   }
 
-  // ── Hook event routing ──
-
-  /** Route an incoming hook event to the appropriate agent. */
-  handleHookEvent(providerId: string, event: Record<string, unknown>): void {
-    this.hookEventHandler.handleEvent(providerId, event as HookEvent);
+  private clearPermission(agent: AgentState): void {
+    agent.permissionSent = false;
+    this.store.broadcast({ type: 'agentToolPermissionClear', id: agent.id });
   }
 
-  /** Register an agent with the hook event handler for session->agent mapping. */
-  registerAgent(sessionId: string, agentId: number): void {
-    this.hookEventHandler.registerAgent(sessionId, agentId);
+  private markActive(agent: AgentState): void {
+    agent.isWaiting = false;
+    agent.awaitingInput = false;
+    agent.isTurnActive = true;
+    agent.permissionSent = false;
+    this.store.broadcast({ type: 'agentStatus', id: agent.id, status: 'active' });
   }
 
-  /** Unregister an agent from the hook event handler. */
-  unregisterAgent(sessionId: string): void {
-    this.hookEventHandler.unregisterAgent(sessionId);
+  private markWaiting(agent: AgentState, awaitingInput = false): void {
+    this.clearTools(agent);
+    agent.isWaiting = true;
+    agent.awaitingInput = awaitingInput;
+    agent.isTurnActive = false;
+    agent.permissionSent = false;
+    this.store.broadcast({ type: 'agentStatus', id: agent.id, status: 'waiting', awaitingInput });
   }
 
-  // ── Agent removal (shared cleanup) ──
-
-  /** Remove an agent: stop watchers, cancel timers, delete from store. */
   removeAgent(id: number): void {
     const agent = this.store.get(id);
     if (!agent) return;
-
-    // Stop JSONL poll timer
-    const jpTimer = this.jsonlPollTimers.get(id);
-    if (jpTimer) {
-      clearInterval(jpTimer);
-    }
-    this.jsonlPollTimers.delete(id);
-
-    // Stop file watching
-    this.fileWatchers.get(id)?.close();
-    this.fileWatchers.delete(id);
-    const pt = this.pollingTimers.get(id);
-    if (pt) {
-      clearInterval(pt);
-    }
-    this.pollingTimers.delete(id);
-
-    // Cancel timers
-    cancelWaitingTimer(id, this.waitingTimers);
-    cancelPermissionTimer(id, this.permissionTimers);
-
-    // Notify adapter before deleting from store
-    this.lifecycleCallbacks.onAgentRemoved?.(id, agent);
-
-    // Remove from store (fires agentRemoved event) and persist
+    this.unregisterAgent(agent.sessionId);
+    this.callbacks.onAgentRemoved?.(id, agent);
     this.store.delete(id);
+    if (this.activeAgentId.current === id) this.activeAgentId.current = null;
     this.store.persist();
   }
 
-  /** Remove a single teammate agent. */
-  removeTeammate(teammateId: number, source: string): void {
-    const agent = this.store.get(teammateId);
-    if (!agent) return;
-    console.log(`[Pixel Agents] Removing teammate ${teammateId} (source: ${source})`);
-    this.dismissalTracker.dismiss(agent.jsonlFile);
-    // Background teammates (spawnToolUseId set) share the LEAD's session id;
-    // unregistering it would knock the lead itself out of the session router.
-    if (!agent.spawnToolUseId) {
-      this.unregisterAgent(agent.sessionId);
-    }
-    this.lifecycleCallbacks.onTeammateRemoved?.(teammateId, agent, source);
-    this.removeAgent(teammateId);
-    if (agent.leadAgentId !== undefined) {
-      this.demoteLeadIfTeamEmpty(agent.leadAgentId);
-    }
-  }
-
-  /** Drop the LEAD badge when the last teammate leaves. teamName is kept: it
-   *  still routes discovery of late-arriving teammates of the same generation
-   *  (and linkTeammates / the derived-team path re-badge on the next spawn). */
-  private demoteLeadIfTeamEmpty(leadId: number): void {
-    const lead = this.store.get(leadId);
-    if (!lead || !lead.isTeamLead) return;
-    for (const a of this.store.values()) {
-      if (a.leadAgentId === leadId) return;
-    }
-    lead.isTeamLead = undefined;
-    this.store.broadcast({
-      type: 'agentTeamInfo',
-      id: leadId,
-      teamName: lead.teamName,
-      agentName: lead.agentName,
-      isTeamLead: undefined,
-      leadAgentId: lead.leadAgentId,
-    });
-    this.store.persist();
-  }
-
-  /**
-   * Close an agent the user (or its process) ended: its Teammates and watched
-   * Sub-agents go with it, and its transcript is dismissed so no scanner
-   * re-adopts it. Children first — once the Lead is gone, nothing can find
-   * them (a later sessionEnd resolves no agent).
-   */
   closeAgent(id: number): void {
     const agent = this.store.get(id);
     if (!agent) return;
-    this.removeTeammates(id);
-    this.subagentWatch.removeByLead(id);
-    this.dismissalTracker.dismiss(agent.jsonlFile);
-    this.removeAgent(id);
-  }
-
-  /** Remove all teammates of a lead agent. */
-  removeTeammates(leadId: number): void {
-    const teammates: number[] = [];
-    for (const [id, agent] of this.store) {
-      if (agent.leadAgentId === leadId) {
-        teammates.push(id);
-      }
-    }
-    for (const id of teammates) {
-      const agent = this.store.get(id);
-      if (agent) {
-        console.log(`[Pixel Agents] Removing teammate ${id} (lead ${leadId} closed)`);
-        this.dismissalTracker.dismiss(agent.jsonlFile);
-        if (!agent.spawnToolUseId) {
-          this.unregisterAgent(agent.sessionId);
-        }
-        this.removeAgent(id);
-      }
-    }
-  }
-
-  // ── Scanning ──
-
-  /** Start project-level scanning for a directory. */
-  startProjectScan(projectDir: string, onAgentCreated?: (agent: AgentState) => void): void {
-    ensureProjectScan(
-      projectDir,
-      this.knownJsonlFiles,
-      this.projectScanTimer,
-      this.activeAgentId,
-      this.store.nextAgentId,
-      this.store,
-      this.fileWatchers,
-      this.pollingTimers,
-      this.waitingTimers,
-      this.permissionTimers,
-      () => this.store.persist(),
-      onAgentCreated ?? ((agent) => this.registerAgent(agent.sessionId, agent.id)),
-      this.hooksEnabled,
-    );
-  }
-
-  /** Start external session scanning (detects sessions from other terminals). */
-  startExternalScanning(projectDir: string): void {
-    if (this.externalScanTimer) return;
-
-    this.externalScanTimer = startExternalSessionScanning(
-      projectDir,
-      this.knownJsonlFiles,
-      this.store.nextAgentId,
-      this.store,
-      this.fileWatchers,
-      this.pollingTimers,
-      this.waitingTimers,
-      this.permissionTimers,
-      this.jsonlPollTimers,
-      () => this.store.persist(),
-      this.watchAllSessions,
-      this.hooksEnabled,
-    );
-  }
-
-  /** Start stale external agent check (removes agents whose JSONL files are deleted). */
-  startStaleCheck(): void {
-    if (this.staleCheckTimer) return;
-
-    this.staleCheckTimer = startStaleExternalAgentCheck(
-      this.store,
-      this.knownJsonlFiles,
-      this.hooksEnabled,
-    );
-  }
-
-  // ── Restore persisted external agents (standalone) ──
-
-  /**
-   * Re-create external agents from the adapter's persistence on startup.
-   * Only external agents are restorable here (no terminal to rebind).
-   * VS Code uses its own restoreAgents() in agentManager.ts to also handle
-   * terminal agents via vscode.window.terminals.
-   */
-  restoreExternalAgents(): void {
-    const adapter = this.store.getAdapter();
-    if (!adapter) return;
-    const persisted = adapter.loadAgents();
-    if (persisted.length === 0) return;
-
-    let maxId = 0;
-
-    for (const p of persisted) {
-      if (!p.isExternal) continue;
-      // Background-spawn children (a leadAgentId but no teamName) are derived
-      // state: the 1s scan re-materializes them from sidecars while their spawn
-      // is live. Restoring them directly would resurrect immortal characters
-      // (also skips stale entries written by older builds that persisted them).
-      if (p.leadAgentId !== undefined && !p.teamName) continue;
-      try {
-        if (!fs.existsSync(p.jsonlFile)) continue;
-      } catch {
-        continue;
-      }
-      if (this.store.has(p.id)) {
-        this.knownJsonlFiles.add(p.jsonlFile);
-        if (p.id > maxId) maxId = p.id;
-        continue;
-      }
-
-      const agent = createAgentState({
-        id: p.id,
-        sessionId: p.sessionId || path.basename(p.jsonlFile, '.jsonl'),
-        isExternal: true,
-        projectDir: p.projectDir,
-        jsonlFile: p.jsonlFile,
-        // Live spawn ids survive the restart so the 1s scan can re-adopt the
-        // spawns' transcripts and the completion queue-op still matches.
-        backgroundAgentToolIds: new Set(p.backgroundAgentToolIds ?? []),
-        directoryName: p.directoryName ?? p.folderName,
-        teamName: p.teamName,
-        agentName: p.agentName,
-        isTeamLead: p.isTeamLead,
-        leadAgentId: p.leadAgentId,
-        teamUsesTmux: p.teamUsesTmux,
-        palette: p.palette,
-        hueShift: p.hueShift,
-      });
-
-      assignPaletteIfNeeded(agent, this.store);
-      this.store.set(p.id, agent);
-      this.knownJsonlFiles.add(p.jsonlFile);
-
-      try {
-        const stat = fs.statSync(p.jsonlFile);
-        agent.fileOffset = stat.size;
-        startFileWatching(
-          p.id,
-          p.jsonlFile,
-          this.store,
-          this.fileWatchers,
-          this.pollingTimers,
-          this.waitingTimers,
-          this.permissionTimers,
-        );
-      } catch {
-        /* ignore stat errors on restore */
-      }
-
-      this.registerAgent(agent.sessionId, agent.id);
-
-      if (p.id > maxId) maxId = p.id;
-      console.log(
-        `[Pixel Agents] Restored external agent ${p.id} -> ${path.basename(p.jsonlFile)}`,
-      );
-    }
-
-    if (maxId >= this.store.nextAgentId.current) {
-      this.store.nextAgentId.current = maxId + 1;
-    }
-
+    this.dismissedSessions.add(agent.sessionId);
+    if (this.activeAgentId.current === id) this.activeAgentId.current = null;
+    this.markWaiting(agent);
+    agent.connected = false;
+    agent.terminalRef = undefined;
+    agent.terminalAgentId = undefined;
+    agent.launchSessionId = undefined;
+    this.store.broadcast({ type: 'terminalSessionClosed', agentId: id });
     this.store.persist();
+    this.store.notifySessionsChanged();
   }
 
-  // ── Cleanup ──
-
-  /** Clean up all scanners, timers, and agents. Called on shutdown. */
   dispose(): void {
-    this.hookEventHandler.dispose();
-    this.subagentWatch.dispose();
-
-    if (this.projectScanTimer.current) {
-      clearInterval(this.projectScanTimer.current);
-      this.projectScanTimer.current = null;
-    }
-    if (this.externalScanTimer) {
-      clearInterval(this.externalScanTimer);
-      this.externalScanTimer = null;
-    }
-    if (this.staleCheckTimer) {
-      clearInterval(this.staleCheckTimer);
-      this.staleCheckTimer = null;
-    }
-
-    for (const id of [...this.store.keys()]) {
-      this.removeAgent(id);
-    }
+    this.store.persist();
+    this.sessions.clear();
+    this.store.clear();
   }
 }

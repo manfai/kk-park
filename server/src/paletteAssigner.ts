@@ -14,8 +14,7 @@ import type { AgentState } from './types.js';
  * Runtime palette count. External asset directories can add char_N.png
  * beyond the bundled 6 (loadExternalCharacterSprites accepts any N), so the
  * count is dynamic. Defaults to PALETTE_COUNT until setPaletteCount is
- * called after assets load. Mirrors the setHookProvider / setTeamSwitch
- * module-level setter pattern in transcriptParser.ts.
+ * called after assets load.
  */
 let currentPaletteCount = PALETTE_COUNT;
 

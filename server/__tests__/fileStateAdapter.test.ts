@@ -1,9 +1,9 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PersistedAgent } from '../../core/src/schemas.js';
+import { newTestDirectory } from './testSupport.js';
 
 // Mock os.homedir() so the adapter resolves to an isolated temp dir on every
 // platform. Overriding process.env.HOME is not portable: os.homedir() reads
@@ -21,10 +21,12 @@ const { getHooksEnabled, setHooksEnabled } = await import('../src/configPersiste
 
 describe('FileStateAdapter', () => {
   beforeEach(() => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-adapter-test-'));
+    tempHome = newTestDirectory('pxl-adapter-test-');
+    vi.stubEnv('COPILOT_HOME', path.join(tempHome, '.copilot'));
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
 
@@ -58,8 +60,8 @@ describe('FileStateAdapter', () => {
     // per-provider accessors own it.
     adapter.setSetting('pixel-agents.hooksEnabled', false);
     expect(adapter.getSetting('pixel-agents.hooksEnabled', true)).toBe(true);
-    setHooksEnabled('claude', false);
-    expect(getHooksEnabled('claude')).toBe(false);
+    setHooksEnabled('copilot', false);
+    expect(getHooksEnabled('copilot')).toBe(false);
     expect(adapter.getSetting('pixel-agents.bypassPermissions', false)).toBe(true);
   });
 
@@ -134,8 +136,9 @@ describe('FileStateAdapter', () => {
       {
         id: 1,
         sessionId: 'sess-1',
-        terminalName: 'Claude Code #1',
-        jsonlFile: '/tmp/sess-1.jsonl',
+        terminalName: 'GitHub Copilot CLI #1',
+        providerId: 'copilot',
+        hooksOnly: true,
         projectDir: '/tmp/proj',
       },
     ];
@@ -143,10 +146,10 @@ describe('FileStateAdapter', () => {
     expect(adapter.loadAgents()).toEqual(agents);
   });
 
-  it('writes state at ~/.pixel-agents/<namespace>-state.json', () => {
+  it('writes state at ~/.pixel-agents/<namespace>-copilot-state.json', () => {
     const adapter = new FileStateAdapter({ namespace: 'vscode' });
     adapter.saveSeats({ '1': { palette: 2, hueShift: 45 } });
-    const stateFile = path.join(tempHome, '.pixel-agents', 'vscode-state.json');
+    const stateFile = path.join(tempHome, '.pixel-agents', 'vscode-copilot-state.json');
     expect(fs.existsSync(stateFile)).toBe(true);
   });
 
@@ -154,10 +157,10 @@ describe('FileStateAdapter', () => {
     const vscode = new FileStateAdapter({ namespace: 'vscode' });
     const standalone = new FileStateAdapter({ namespace: 'standalone' });
     const agentVs: PersistedAgent[] = [
-      { id: 1, terminalName: 'A', jsonlFile: '/a.jsonl', projectDir: '/proj' },
+      { id: 1, terminalName: 'A', sessionId: 'one', providerId: 'copilot', projectDir: '/proj' },
     ];
     const agentSa: PersistedAgent[] = [
-      { id: 9, terminalName: '', jsonlFile: '/b.jsonl', projectDir: '/proj' },
+      { id: 9, terminalName: '', sessionId: 'two', providerId: 'copilot', projectDir: '/proj' },
     ];
     vscode.saveAgents(agentVs);
     standalone.saveAgents(agentSa);
@@ -168,7 +171,9 @@ describe('FileStateAdapter', () => {
   it('preserves seats when saving agents (and vice versa)', () => {
     const adapter = new FileStateAdapter({ namespace: 'standalone' });
     adapter.saveSeats({ '1': { palette: 3 } });
-    adapter.saveAgents([{ id: 1, terminalName: 'x', jsonlFile: '/x.jsonl', projectDir: '/tmp' }]);
+    adapter.saveAgents([
+      { id: 1, terminalName: 'x', sessionId: 'one', providerId: 'copilot', projectDir: '/tmp' },
+    ]);
     expect(adapter.loadSeats()).toEqual({ '1': { palette: 3 } });
     expect(adapter.loadAgents()).toHaveLength(1);
   });

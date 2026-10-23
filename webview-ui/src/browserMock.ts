@@ -268,7 +268,7 @@ export function dispatchMockMessages(): void {
     window.dispatchEvent(new MessageEvent('message', { data }));
   }
 
-  // Must match the load order defined in CLAUDE.md:
+  // Match the server's asset load order:
   // characterSpritesLoaded -> floorTilesLoaded -> wallTilesLoaded -> carpetTilesLoaded
   //   -> furnitureAssetsLoaded -> layoutLoaded
   dispatch({ type: 'characterSpritesLoaded', characters });

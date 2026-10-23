@@ -1,20 +1,5 @@
-/** Map status prefixes back to tool names for animation selection */
-const STATUS_TO_TOOL: Record<string, string> = {
-  Reading: 'Read',
-  Searching: 'Grep',
-  Globbing: 'Glob',
-  Fetching: 'WebFetch',
-  'Searching web': 'WebSearch',
-  Writing: 'Write',
-  Editing: 'Edit',
-  Running: 'Bash',
-  Task: 'Task',
-};
-
+/** A fallback label when a protocol message does not carry a tool name. */
 export function extractToolName(status: string): string | null {
-  for (const [prefix, tool] of Object.entries(STATUS_TO_TOOL)) {
-    if (status.startsWith(prefix)) return tool;
-  }
   const first = status.split(/[\s:]/)[0];
   return first || null;
 }
@@ -22,7 +7,7 @@ export function extractToolName(status: string): string | null {
 // ── Provider capabilities (tool taxonomy for rendering decisions) ────────────
 // Populated once by the `providerCapabilities` postMessage after `webviewReady`.
 // Modules classifying tools (character animation, subagent creation gate) read
-// from here instead of hardcoding Claude-specific tool names.
+// from here instead of hardcoding provider-specific tool names.
 
 const providerCaps: {
   readingTools: Set<string>;

@@ -16,6 +16,7 @@ interface AgentCardBarProps {
   statusFor: (agentId: number) => TabStatus | null;
   onSelect: (agentId: number) => void;
   onClose: (agentId: number) => void;
+  readOnly?: boolean;
 }
 
 /**
@@ -31,7 +32,7 @@ interface AgentCardBarProps {
  * In standalone, TerminalDrawer owns the bar and the cards double as the
  * terminal panel's tabs (the panel opens to the bar's right). In VS Code the
  * bar stands alone and lists every agent in the office, external sessions
- * included; a card click raises that agent's editor terminal via focusAgent.
+ * included; a card click opens that exact session.
  */
 export function AgentCardBar({
   agentIds,
@@ -41,6 +42,7 @@ export function AgentCardBar({
   statusFor,
   onSelect,
   onClose,
+  readOnly = false,
 }: AgentCardBarProps) {
   if (agentIds.length === 0) return null;
 
@@ -58,6 +60,7 @@ export function AgentCardBar({
           status={statusFor(agentId)}
           onSelect={onSelect}
           onClose={onClose}
+          showClose={!readOnly}
         />
       ))}
     </div>

@@ -60,8 +60,7 @@ export interface PixelAgentsConfig {
   vscode: AdapterSettings;
   standalone: AdapterSettings;
   externalAssetDirectories: string[];
-  /** Per-provider consent to modify that provider's settings file (Claude:
-   *  ~/.claude/settings.json). Shared across surfaces — consent is per-human
+  /** Consent to create the Copilot user hook file. Shared across surfaces — consent is per-human
    *  per-provider, not per-adapter. A provider absent from the map has never
    *  been answered. */
   hooksConsent: Record<string, HooksConsentState>;
@@ -236,7 +235,7 @@ export function readConfig(): PixelAgentsConfig {
 }
 
 // ── Per-provider hooks consent + preference ─────────────────
-// The provider id keys these maps (HookProvider.id — 'claude' today). All
+// The provider id keys these maps (HookProvider.id). All
 // writers go through readConfig→writeConfig, so a hand-edited or older file
 // degrades to "unanswered"/default rather than crashing.
 

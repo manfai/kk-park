@@ -2,7 +2,7 @@
  * The terminal pane's touch gesture reducer (scroll, flick, tap, long-press
  * selection, handle drags).
  *
- * WHY THIS IS A UNIT TEST, given "E2E over webview unit tests" (CLAUDE.md):
+ * WHY THIS IS A UNIT TEST, given the project's E2E-first policy:
  * there is no touch e2e — Playwright's Electron/desktop runs can't reproduce
  * the iOS behaviours this machine was tuned against (palm grazes, stale
  * touch ids, the long-press recognizer) — and every rule pinned here was a

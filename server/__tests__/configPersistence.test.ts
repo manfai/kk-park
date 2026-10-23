@@ -1,7 +1,6 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   clearHooksAnswer,
@@ -17,23 +16,18 @@ import {
   setHooksEnabled,
   writeConfig,
 } from '../src/configPersistence.js';
+import { isolateHome, newTestDirectory } from './testSupport.js';
 
 describe('configPersistence: areas', () => {
   let tempHome: string;
-  let originalHome: string | undefined;
 
   beforeEach(() => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-config-test-'));
-    originalHome = process.env.HOME;
-    process.env.HOME = tempHome;
+    tempHome = newTestDirectory('pxl-config-test-');
+    isolateHome(tempHome);
   });
 
   afterEach(() => {
-    if (originalHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = originalHome;
-    }
+    vi.unstubAllEnvs();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
 
@@ -99,8 +93,8 @@ describe('configPersistence: areas', () => {
 
   describe('hooksConsent / hooksEnabled maps', () => {
     it('defaults to unanswered/enabled when the config file is missing or predates the maps', () => {
-      expect(getHooksConsent('claude')).toBe('unanswered');
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksConsent('copilot')).toBe('unanswered');
+      expect(getHooksEnabled('copilot')).toBe(true);
       writeConfig(readConfig()); // full config on disk...
       const raw = JSON.parse(
         fs.readFileSync(path.join(tempHome, '.pixel-agents', 'config.json'), 'utf-8'),
@@ -111,8 +105,8 @@ describe('configPersistence: areas', () => {
         path.join(tempHome, '.pixel-agents', 'config.json'),
         JSON.stringify(raw, null, 2),
       );
-      expect(getHooksConsent('claude')).toBe('unanswered');
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksConsent('copilot')).toBe('unanswered');
+      expect(getHooksEnabled('copilot')).toBe(true);
     });
 
     it('drops junk values from hand-edited maps instead of crashing or trusting them', () => {
@@ -120,41 +114,41 @@ describe('configPersistence: areas', () => {
       fs.writeFileSync(
         path.join(tempHome, '.pixel-agents', 'config.json'),
         JSON.stringify({
-          hooksConsent: { claude: 'GRANTED', other: 'declined', junk: 42 },
-          hooksEnabled: { claude: 'yes', other: false },
+          hooksConsent: { copilot: 'GRANTED', other: 'declined', junk: 42 },
+          hooksEnabled: { copilot: 'yes', other: false },
         }),
       );
       // Only exact values survive; everything else degrades to the default.
-      expect(getHooksConsent('claude')).toBe('unanswered');
+      expect(getHooksConsent('copilot')).toBe('unanswered');
       expect(getHooksConsent('other')).toBe('declined');
       expect(getHooksConsent('junk')).toBe('unanswered');
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksEnabled('copilot')).toBe(true);
       expect(getHooksEnabled('other')).toBe(false);
     });
 
     it('grantHooksConsent persists per provider and is idempotent', () => {
-      grantHooksConsent('claude');
-      expect(getHooksConsent('claude')).toBe('granted');
+      grantHooksConsent('copilot');
+      expect(getHooksConsent('copilot')).toBe('granted');
       expect(getHooksConsent('other')).toBe('unanswered');
-      grantHooksConsent('claude');
-      expect(getHooksConsent('claude')).toBe('granted');
+      grantHooksConsent('copilot');
+      expect(getHooksConsent('copilot')).toBe('granted');
     });
 
     it('recordHooksDecline writes consent + preference in ONE cycle; clearHooksAnswer undoes both', () => {
-      grantHooksConsent('claude');
-      recordHooksDecline('claude');
-      expect(getHooksConsent('claude')).toBe('declined');
-      expect(getHooksEnabled('claude')).toBe(false);
-      clearHooksAnswer('claude');
-      expect(getHooksConsent('claude')).toBe('unanswered');
-      expect(getHooksEnabled('claude')).toBe(true);
+      grantHooksConsent('copilot');
+      recordHooksDecline('copilot');
+      expect(getHooksConsent('copilot')).toBe('declined');
+      expect(getHooksEnabled('copilot')).toBe(false);
+      clearHooksAnswer('copilot');
+      expect(getHooksConsent('copilot')).toBe('unanswered');
+      expect(getHooksEnabled('copilot')).toBe(true);
       // Both keys are genuinely gone — "never answered" and "answered and
       // reverted" must be indistinguishable on disk.
       const raw = JSON.parse(
         fs.readFileSync(path.join(tempHome, '.pixel-agents', 'config.json'), 'utf-8'),
       );
-      expect('claude' in (raw.hooksConsent ?? {})).toBe(false);
-      expect('claude' in (raw.hooksEnabled ?? {})).toBe(false);
+      expect('copilot' in (raw.hooksConsent ?? {})).toBe(false);
+      expect('copilot' in (raw.hooksEnabled ?? {})).toBe(false);
     });
 
     // Review finding I1 (sol): never→install(fails)→notNow stranded the ask.
@@ -163,43 +157,43 @@ describe('configPersistence: areas', () => {
     // install then leaves granted + default-enabled, which a later notNow
     // revert fully takes back (the ask returns).
     it('a grant replacing a decline clears the decline preference remnant', () => {
-      recordHooksDecline('claude');
-      expect(getHooksEnabled('claude')).toBe(false);
-      grantHooksConsent('claude');
-      expect(getHooksConsent('claude')).toBe('granted');
-      expect(getHooksEnabled('claude')).toBe(true);
+      recordHooksDecline('copilot');
+      expect(getHooksEnabled('copilot')).toBe(false);
+      grantHooksConsent('copilot');
+      expect(getHooksConsent('copilot')).toBe('granted');
+      expect(getHooksEnabled('copilot')).toBe(true);
       const raw = JSON.parse(
         fs.readFileSync(path.join(tempHome, '.pixel-agents', 'config.json'), 'utf-8'),
       );
-      expect('claude' in (raw.hooksEnabled ?? {})).toBe(false);
+      expect('copilot' in (raw.hooksEnabled ?? {})).toBe(false);
     });
 
     // A grant must NOT clobber a Settings toggle-off: the preference delete is
     // scoped to replacing a DECLINE, whose hooks-off was the answer's write.
     it('a repeat grant leaves a toggle-written preference alone', () => {
-      grantHooksConsent('claude');
-      setHooksEnabled('claude', false); // the Settings toggle, not an answer
-      grantHooksConsent('claude'); // idempotent repeat
-      expect(getHooksEnabled('claude')).toBe(false);
+      grantHooksConsent('copilot');
+      setHooksEnabled('copilot', false); // the Settings toggle, not an answer
+      grantHooksConsent('copilot'); // idempotent repeat
+      expect(getHooksEnabled('copilot')).toBe(false);
     });
 
     it('clearHooksEnabled removes the key so the default (true) applies again', () => {
-      setHooksEnabled('claude', false);
-      expect(getHooksEnabled('claude')).toBe(false);
-      clearHooksEnabled('claude');
-      expect(getHooksEnabled('claude')).toBe(true);
+      setHooksEnabled('copilot', false);
+      expect(getHooksEnabled('copilot')).toBe(false);
+      clearHooksEnabled('copilot');
+      expect(getHooksEnabled('copilot')).toBe(true);
       // The key is genuinely gone, not written back as true: "never answered"
       // and "answered and reverted" must be indistinguishable on disk.
       const raw = JSON.parse(
         fs.readFileSync(path.join(tempHome, '.pixel-agents', 'config.json'), 'utf-8'),
       );
-      expect('claude' in (raw.hooksEnabled ?? {})).toBe(false);
+      expect('copilot' in (raw.hooksEnabled ?? {})).toBe(false);
     });
 
     it('resetHooksConfig returns all hooks choices to factory state (uninstall → ask again)', () => {
-      grantHooksConsent('claude');
+      grantHooksConsent('copilot');
       recordHooksDecline('other');
-      setHooksEnabled('claude', false); // a persisted "off" must not survive uninstall,
+      setHooksEnabled('copilot', false); // a persisted "off" must not survive uninstall,
       setHooksEnabled('other', false); // or the next install never prompts
       const cfg = readConfig();
       cfg.vscode.hooksInfoShown = true;
@@ -208,9 +202,9 @@ describe('configPersistence: areas', () => {
 
       resetHooksConfig();
 
-      expect(getHooksConsent('claude')).toBe('unanswered');
+      expect(getHooksConsent('copilot')).toBe('unanswered');
       expect(getHooksConsent('other')).toBe('unanswered');
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksEnabled('copilot')).toBe(true);
       expect(getHooksEnabled('other')).toBe(true);
       const reset = readConfig();
       expect(reset.vscode.hooksInfoShown).toBe(false);

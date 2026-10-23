@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 
-import type { Directory } from '../hooks/useExtensionMessages.js';
 import type { TerminalDrawerController } from '../hooks/useTerminalDrawer.js';
 import type { OfficeState } from '../office/engine/officeState.js';
 
@@ -14,52 +13,29 @@ export interface MobileShellController {
   toggleView: () => void;
   /** A tap on an agent card. */
   selectCard: (agentId: number) => void;
-  /** A Directory picked from the + card's drawer: launch into it, then
-   *  slide over once the new terminal appears. */
-  launch: (directory: Directory) => void;
 }
 
 interface MobileShellInputs {
   getOfficeState: () => OfficeState;
-  terminalAgentIds: number[];
   drawer: TerminalDrawerController;
   focusedAgentId: number | null;
-  launchAgent: (directory: Directory) => void;
+  openSession: (id: number) => void;
 }
 
 /**
  * The mobile shell's navigation rules: which page shows, and what a card tap,
- * the view toggle, and a launch do to it. Office and terminal pages share one
+ * the view toggle, and opening a session do to it. Office and terminal pages share one
  * selection model with the desktop — the drawer still owns which pane is
  * active — this only adds the page.
  */
 export function useMobileShell({
   getOfficeState,
-  terminalAgentIds,
   drawer,
   focusedAgentId,
-  launchAgent,
+  openSession,
 }: MobileShellInputs): MobileShellController {
   const [view, setView] = useState<MobileView>('office');
-  const { reveal, lastOpened } = drawer;
-
-  // Slide over only for launches made from the + card: the office is the
-  // app's main screen, so a reload that re-announces live sessions must land
-  // on the office, not whatever terminal happens to exist.
-  const pendingLaunchRef = useRef(false);
-  useEffect(() => {
-    if (!lastOpened) return;
-    if (pendingLaunchRef.current) setView('terminal');
-    pendingLaunchRef.current = false;
-  }, [lastOpened]);
-
-  const launch = useCallback(
-    (directory: Directory) => {
-      pendingLaunchRef.current = true;
-      launchAgent(directory);
-    },
-    [launchAgent],
-  );
+  const { reveal, shownAgentId } = drawer;
 
   const showTerminal = useCallback(() => setView('terminal'), []);
 
@@ -74,9 +50,12 @@ export function useMobileShell({
       setView('office');
       return;
     }
-    if (focusedAgentId !== null) reveal(getOfficeState().terminalOwnerOf(focusedAgentId));
-    setView('terminal');
-  }, [view, focusedAgentId, reveal, getOfficeState]);
+    if (focusedAgentId !== null) {
+      openSession(getOfficeState().terminalOwnerOf(focusedAgentId));
+    } else if (shownAgentId !== null) {
+      openSession(shownAgentId);
+    }
+  }, [view, focusedAgentId, openSession, getOfficeState, shownAgentId]);
 
   // In terminal view the bar is a tab strip: one tap switches panes (agents
   // with no pane jump back to the office). In office view it mirrors the
@@ -86,24 +65,17 @@ export function useMobileShell({
   const selectCard = useCallback(
     (agentId: number) => {
       const os = getOfficeState();
-      const hasTerminal = terminalAgentIds.includes(agentId);
-      if (view === 'terminal') {
+      if (view === 'terminal' || os.selectedAgentId === agentId) {
         os.selectAndFollow(agentId);
-        if (hasTerminal) reveal(agentId);
-        else setView('office');
-        return;
-      }
-      if (os.selectedAgentId === agentId && hasTerminal) {
-        reveal(agentId);
-        setView('terminal');
+        openSession(agentId);
         return;
       }
       os.selectAndFollow(agentId);
       // Pre-select the pane (and the card highlight) without leaving the office.
       reveal(agentId);
     },
-    [getOfficeState, terminalAgentIds, view, reveal],
+    [getOfficeState, view, reveal, openSession],
   );
 
-  return { view, showTerminal, toggleView, selectCard, launch };
+  return { view, showTerminal, toggleView, selectCard };
 }

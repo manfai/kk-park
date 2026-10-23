@@ -30,7 +30,7 @@ export function bearerTokenValid(authorization: string | undefined, expected: st
 /**
  * Whether a standalone handshake proves PRIVILEGE -- the right to send messages
  * that reach outside `~/.pixel-agents/` (the hooks toggle, which grants durable
- * consent to modify `~/.claude/settings.json`), to launch an agent, or to attach
+ * consent to install Copilot hooks), to launch an agent, or to attach
  * to its terminal (a shell running as the operator).
  *
  * The handshake must carry the server token in its `?token=` query. That token

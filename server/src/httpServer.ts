@@ -18,6 +18,7 @@ import {
   WS_CLOSE_FORBIDDEN_ORIGIN,
   WS_CLOSE_UNAUTHORIZED,
 } from './constants.js';
+import { sessionCatalogue } from './sessionCatalog.js';
 import type { PtySessionManager } from './terminal/ptySessionManager.js';
 import { registerTerminalRoutes } from './terminal/terminalRoutes.js';
 import type { AgentState } from './types.js';
@@ -112,6 +113,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
   registerTerminalRoutes(app, {
     token: options.token,
     allowedHostnames,
+    store: options.store,
     ptyManager: options.ptyManager,
   });
 
@@ -223,12 +225,10 @@ function registerWebSocketRoute(
       safeSend(socket, {
         type: 'agentCreated',
         id,
+        characterName: agent.characterName,
+        archived: agent.archived,
         directoryName: agent.directoryName,
         isExternal: agent.isExternal || undefined,
-        isTeammate: agent.leadAgentId !== undefined || undefined,
-        teammateName: agent.agentName,
-        parentAgentId: agent.leadAgentId,
-        teamName: agent.teamName,
         hooksOnly: agent.hooksOnly || undefined,
         palette: agent.palette,
         hueShift: agent.hueShift,
@@ -240,12 +240,17 @@ function registerWebSocketRoute(
     };
 
     const onBroadcast = (message: Record<string, unknown>) => {
+      if (!privileged && message.type === 'terminalSessionOpened') return;
       safeSend(socket, message);
+    };
+    const onSessionsChanged = () => {
+      if (privileged) safeSend(socket, { ...sessionCatalogue(store) });
     };
 
     store.on('agentAdded', onAgentAdded);
     store.on('agentRemoved', onAgentRemoved);
     store.on('broadcast', onBroadcast);
+    store.on('sessionsChanged', onSessionsChanged);
 
     // Handle incoming client messages
     socket.on('message', (data: Buffer | string) => {
@@ -272,6 +277,7 @@ function registerWebSocketRoute(
       store.off('agentAdded', onAgentAdded);
       store.off('agentRemoved', onAgentRemoved);
       store.off('broadcast', onBroadcast);
+      store.off('sessionsChanged', onSessionsChanged);
     });
   });
 }

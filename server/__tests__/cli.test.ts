@@ -1,12 +1,12 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
-import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 
 import { CliArgsError, parseArgs } from '../src/cli.js';
-import { CLAUDE_HOOK_EVENTS } from '../src/providers/hook/claude/constants.js';
+import { COPILOT_HOOK_EVENTS } from '../src/providers/hook/copilot/constants.js';
+import { newTestDirectory, seedCopilotHooks } from './testSupport.js';
 
 const CLI_BUNDLE = path.join(__dirname, '../../dist/cli.js');
 const CLI_START_TIMEOUT_MS = 10_000;
@@ -65,6 +65,12 @@ function runCli(args: string[]): Promise<{ code: number | null; stdout: string; 
 }
 
 describe('parseArgs', () => {
+  it('selects Copilot explicitly and rejects missing or unknown providers', () => {
+    expect(parseArgs([]).provider).toBe('copilot');
+    expect(parseArgs(['--provider', 'copilot']).provider).toBe('copilot');
+    expect(() => parseArgs(['--provider'])).toThrow(CliArgsError);
+    expect(() => parseArgs(['--provider', 'unknown'])).toThrow(CliArgsError);
+  });
   // 1. No --port -> ephemeral default (unset), never a hardcoded port
   it('defaults port to undefined (ephemeral) when --port is omitted', () => {
     const args = parseArgs([]);
@@ -204,11 +210,16 @@ describe('dist/cli.js entry-point guard', () => {
     body: (ctx: { output: () => string; port: number }) => Promise<void>,
     host = '127.0.0.1',
   ): Promise<void> {
-    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-workspace-'));
+    const workspaceDir = newTestDirectory('pxl-cli-workspace-');
     const port = await getFreePort();
     const child = spawn(process.execPath, [CLI_BUNDLE, '--port', port.toString(), '--host', host], {
       cwd: workspaceDir,
-      env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
+      env: {
+        ...process.env,
+        HOME: tmpHome,
+        USERPROFILE: tmpHome,
+        COPILOT_HOME: path.join(tmpHome, '.copilot'),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -260,7 +271,7 @@ describe('dist/cli.js entry-point guard', () => {
   // refused with no way for the operator to find out why. Nothing else in this
   // repo reads the CLI's stdout, so nothing else can catch that.
   itBuilt('prints a URL carrying the token the server actually minted', async () => {
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-url-'));
+    const tmpHome = newTestDirectory('pxl-cli-url-');
     await runCliServer(tmpHome, async ({ output, port }) => {
       await waitForCondition(() => URL_LINE.test(output()));
       const url = printedUrl(output());
@@ -282,7 +293,7 @@ describe('dist/cli.js entry-point guard', () => {
   // branch and are left untested here: binding them needs IPv6 on the runner,
   // which is not a property of ours to depend on.
   itBuilt('prints a reachable loopback host when bound to the 0.0.0.0 wildcard', async () => {
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-wildcard-'));
+    const tmpHome = newTestDirectory('pxl-cli-wildcard-');
     await runCliServer(
       tmpHome,
       async ({ output }) => {
@@ -303,118 +314,78 @@ describe('dist/cli.js entry-point guard', () => {
   // happens in the browser UI, never at startup. This is the inverse of the
   // seeded test below: it pins that the gate actually gates, rather than the
   // install happening to work.
-  itBuilt('starts without touching settings.json when consent has not been given', async () => {
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-noconsent-'));
+  itBuilt('starts without touching pixel-agents.json when consent has not been given', async () => {
+    const tmpHome = newTestDirectory('pxl-cli-noconsent-');
     await runCliServer(tmpHome, async ({ output }) => {
       // Give the startup consent/install path time to have run (it is awaited
       // before the "server running" line, which health readiness follows).
       await new Promise((resolve) => setTimeout(resolve, 500));
-      expect(fs.existsSync(path.join(tmpHome, '.claude', 'settings.json'))).toBe(false);
+      expect(fs.existsSync(path.join(tmpHome, '.copilot', 'hooks', 'pixel-agents.json'))).toBe(
+        false,
+      );
       expect(output()).toContain('needs one-time approval');
     });
   });
 
-  // An existing user whose hooks a pre-consent version installed gets ZERO
-  // friction: no prompt, just the migration. The startup install is the 14 -> 12
-  // migration and it only ever REDUCES scope (UserPromptSubmit and TaskCreated,
-  // the two events that forwarded prompt text, go away), so asking would buy
-  // this user nothing they do not already have. What it must NOT do is take the
-  // opportunity to touch anything else: unrelated settings keys and a
-  // third-party hook sharing one of our entries both survive intact.
-  itBuilt('migrates a pre-consent install to 12 events with no prompt', async () => {
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-legacy-'));
-    const settingsPath = path.join(tmpHome, '.claude', 'settings.json');
-    fs.mkdirSync(path.join(tmpHome, '.claude'), { recursive: true });
-    // A legacy install: our command on every event we install today, plus the
-    // two we no longer do.
-    const ourCommand = `node "${path.join(tmpHome, '.pixel-agents', 'hooks', 'claude-hook.js')}"`;
-    const thirdPartyCommand = 'node /elsewhere/other-tool.js';
-    const legacyEvents = [...CLAUDE_HOOK_EVENTS, 'UserPromptSubmit', 'TaskCreated'];
-    const hooks = Object.fromEntries(
-      legacyEvents.map((event) => [
-        event,
-        [{ matcher: '', hooks: [{ type: 'command', command: ourCommand, timeout: 5 }] }],
-      ]),
-    ) as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
-    // A third-party hook sharing the entry of an event we are dropping: the
-    // sweep must take ours out of it and leave theirs.
-    hooks['UserPromptSubmit'][0].hooks.unshift({ command: thirdPartyCommand });
-    fs.writeFileSync(
-      settingsPath,
-      JSON.stringify({ permissions: { allow: ['Bash(ls:*)'] }, hooks }, null, 2),
-    );
-
-    await runCliServer(tmpHome, async ({ output }) => {
-      await waitForCondition(() => output().includes('[Pixel Agents] Hooks installed'));
-      const after = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as {
-        permissions?: unknown;
-        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
-      };
-      const ourEvents = Object.entries(after.hooks)
-        .filter(([, entries]) => entries.some((e) => e.hooks.some((h) => h.command === ourCommand)))
-        .map(([event]) => event)
-        .sort();
-      expect(ourEvents).toEqual([...CLAUDE_HOOK_EVENTS].sort());
-      expect(ourEvents).not.toContain('UserPromptSubmit');
-      expect(ourEvents).not.toContain('TaskCreated');
-      // Untouched neighbours: an unrelated top-level key, and the third-party
-      // hook that shared the entry we swept.
-      expect(after.permissions).toEqual({ allow: ['Bash(ls:*)'] });
-      expect(after.hooks['UserPromptSubmit'][0].hooks).toEqual([{ command: thirdPartyCommand }]);
-      // TaskCreated held only ours -> emptied and the key removed entirely.
-      expect(after.hooks['TaskCreated']).toBeUndefined();
-
-      const configPath = path.join(tmpHome, '.pixel-agents', 'config.json');
-      const consent = (
-        JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
-          hooksConsent?: Record<string, string>;
-        }
-      ).hooksConsent?.claude;
-      expect(consent).toBe('granted');
-
-      // ZERO friction: nothing that reads as a question or a deferral was
-      // printed. The prompt headline, the [Y/n/never] question, and both
-      // no-consent notices would each be a prompt this user must not see.
-      expect(output()).not.toContain('needs to add its hooks');
-      expect(output()).not.toContain('[Y/n/never]');
-      expect(output()).not.toContain('needs one-time approval');
-      expect(output()).not.toContain('asked again next time');
-    });
-  });
+  itBuilt(
+    'recognizes an existing owned Copilot hook file without changing other hook files',
+    async () => {
+      const tmpHome = newTestDirectory('pxl-cli-existing-');
+      seedCopilotHooks(tmpHome);
+      const other = path.join(tmpHome, '.copilot', 'hooks', 'other-tool.json');
+      const contents = JSON.stringify({ version: 1, hooks: { sessionStart: [] } });
+      fs.writeFileSync(other, contents);
+      await runCliServer(tmpHome, async ({ output }) => {
+        await waitForCondition(() => output().includes('[Pixel Agents] Hooks installed'));
+        const config = JSON.parse(
+          fs.readFileSync(path.join(tmpHome, '.copilot', 'hooks', 'pixel-agents.json'), 'utf8'),
+        );
+        expect(Object.keys(config.hooks).sort()).toEqual([...COPILOT_HOOK_EVENTS].sort());
+        expect(fs.readFileSync(other, 'utf8')).toBe(contents);
+        const consent = JSON.parse(
+          fs.readFileSync(path.join(tmpHome, '.pixel-agents', 'config.json'), 'utf8'),
+        ).hooksConsent?.copilot;
+        expect(consent).toBe('granted');
+        expect(output()).not.toContain('needs one-time approval');
+      });
+    },
+  );
 
   // W5: the hook script is copied BEFORE the settings entries, and a failed
   // copy aborts the install. An entry pointing at a script that does not exist
-  // makes Claude Code spawn a dead `node` for every event — worse than nothing.
+  // makes Copilot CLI spawn a dead `node` for every event — worse than nothing.
   // A regular file where the hooks DIRECTORY belongs makes the copy fail
   // (ENOTDIR) without touching the repo's real dist/.
   itBuilt('writes no hook entries when the hook script cannot be copied', async () => {
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-nocopy-'));
+    const tmpHome = newTestDirectory('pxl-cli-nocopy-');
     fs.mkdirSync(path.join(tmpHome, '.pixel-agents'), { recursive: true });
     fs.writeFileSync(
       path.join(tmpHome, '.pixel-agents', 'config.json'),
-      JSON.stringify({ hooksConsent: { claude: 'granted' } }),
+      JSON.stringify({ hooksConsent: { copilot: 'granted' } }),
     );
-    // hooks/ is a FILE, so copying into hooks/claude-hook.js fails.
+    // hooks/ is a FILE, so copying into hooks/copilot-hook.js fails.
     fs.writeFileSync(path.join(tmpHome, '.pixel-agents', 'hooks'), 'not a directory');
 
     await runCliServer(tmpHome, async ({ output }) => {
       await new Promise((resolve) => setTimeout(resolve, 500));
-      expect(fs.existsSync(path.join(tmpHome, '.claude', 'settings.json'))).toBe(false);
+      expect(fs.existsSync(path.join(tmpHome, '.copilot', 'hooks', 'pixel-agents.json'))).toBe(
+        false,
+      );
       expect(output()).toContain('Hooks NOT installed');
       expect(output()).not.toContain('[Pixel Agents] Hooks installed');
     });
   });
 
   itBuilt('installs the bundled hook script from the package root on startup', async () => {
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-home-'));
-    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-workspace-'));
+    const tmpHome = newTestDirectory('pxl-cli-home-');
+    const workspaceDir = newTestDirectory('pxl-cli-workspace-');
     // The spawned CLI has no TTY, and without prior consent the first-run gate
     // (rightly) skips hook installation there — seed consent so this test can
     // exercise the actual install path.
     fs.mkdirSync(path.join(tmpHome, '.pixel-agents'), { recursive: true });
     fs.writeFileSync(
       path.join(tmpHome, '.pixel-agents', 'config.json'),
-      JSON.stringify({ hooksConsent: { claude: 'granted' } }),
+      JSON.stringify({ hooksConsent: { copilot: 'granted' } }),
     );
     const port = await getFreePort();
     const child = spawn(
@@ -422,7 +393,12 @@ describe('dist/cli.js entry-point guard', () => {
       [CLI_BUNDLE, '--port', port.toString(), '--host', '127.0.0.1'],
       {
         cwd: workspaceDir,
-        env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
+        env: {
+          ...process.env,
+          HOME: tmpHome,
+          USERPROFILE: tmpHome,
+          COPILOT_HOME: path.join(tmpHome, '.copilot'),
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
@@ -442,14 +418,16 @@ describe('dist/cli.js entry-point guard', () => {
         }
       });
 
-      const installedHook = path.join(tmpHome, '.pixel-agents', 'hooks', 'claude-hook.js');
+      const installedHook = path.join(tmpHome, '.pixel-agents', 'hooks', 'copilot-hook.js');
       await waitForCondition(() => fs.existsSync(installedHook));
-      expect(fs.readFileSync(installedHook, 'utf-8')).toContain('#!/usr/bin/env node');
+      expect(fs.readFileSync(installedHook, 'utf-8')).toBe(
+        fs.readFileSync(path.join(__dirname, '../../dist/hooks/copilot-hook.js'), 'utf8'),
+      );
       if (process.platform !== 'win32') {
-        expect(fs.statSync(installedHook).mode & 0o100).toBeTruthy();
+        expect(fs.statSync(installedHook).mode & 0o777).toBe(0o600);
       }
 
-      const settingsPath = path.join(tmpHome, '.claude', 'settings.json');
+      const settingsPath = path.join(tmpHome, '.copilot', 'hooks', 'pixel-agents.json');
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as Record<
         string,
         unknown

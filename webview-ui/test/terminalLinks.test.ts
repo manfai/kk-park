@@ -3,7 +3,7 @@
  * terminal output (OSC 8 hyperlinks, printed URLs) and window.open, and the
  * touch-tap URL lookup that stands in for the click mobile taps never send.
  *
- * WHY THIS IS A UNIT TEST, given "E2E over webview unit tests" (CLAUDE.md):
+ * WHY THIS IS A UNIT TEST, given the project's E2E-first policy:
  * it pins a security invariant, not UI internals -- a `javascript:` link that
  * an e2e run would have to click (and then observe NOT executing) is far more
  * directly stated as "window.open was never called".

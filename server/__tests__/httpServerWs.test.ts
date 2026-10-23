@@ -1,10 +1,10 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import { WS_CLOSE_FORBIDDEN_ORIGIN, WS_CLOSE_UNAUTHORIZED } from '../src/constants.js';
+import { newTestDirectory } from './testSupport.js';
 
 // Isolated temp HOME: the server writes ~/.pixel-agents/{server.json,servers/}
 // and the consent assertions below read ~/.pixel-agents/config.json.
@@ -93,7 +93,7 @@ function readHooksConsent(): boolean {
   try {
     const raw = fs.readFileSync(path.join(tmpBase, '.pixel-agents', 'config.json'), 'utf-8');
     const consent = (JSON.parse(raw) as { hooksConsent?: Record<string, string> }).hooksConsent;
-    return consent?.claude === 'granted';
+    return consent?.copilot === 'granted';
   } catch {
     return false;
   }
@@ -104,7 +104,8 @@ describe('/ws connection gate', () => {
   const sockets: WebSocket[] = [];
 
   beforeEach(() => {
-    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-ws-test-'));
+    tmpBase = newTestDirectory('pxl-ws-test-');
+    vi.stubEnv('COPILOT_HOME', path.join(tmpBase, '.copilot'));
     fs.mkdirSync(path.join(tmpBase, '.pixel-agents'), { recursive: true });
     server = new PixelAgentsServer();
   });
@@ -114,6 +115,7 @@ describe('/ws connection gate', () => {
     sockets.length = 0;
     server?.stop();
     try {
+      vi.unstubAllEnvs();
       fs.rmSync(tmpBase, { recursive: true, force: true });
     } catch {
       /* ignore */
@@ -136,7 +138,7 @@ describe('/ws connection gate', () => {
 
   // 1. THE finding: a WebSocket connect is not blocked by CORS, so a page the
   //    user happens to be visiting could open /ws and grant durable consent to
-  //    modify ~/.claude/settings.json. A forged Origin must be refused, and no
+  //    modify ~/.copilot/hooks/pixel-agents.json. A forged Origin must be refused, and no
   //    message it sends may take effect.
   it('rejects a cross-origin standalone connection and its setHooksEnabled', async () => {
     const { port } = await startStandalone();
@@ -150,7 +152,7 @@ describe('/ws connection gate', () => {
     // Even if the attacker keeps writing, nothing is processed.
     try {
       result.socket.send(
-        JSON.stringify({ type: 'setHooksEnabled', providerId: 'claude', enabled: true }),
+        JSON.stringify({ type: 'setHooksEnabled', providerId: 'copilot', enabled: true }),
       );
     } catch {
       /* socket already closed — that IS the point */
@@ -231,7 +233,7 @@ describe('/ws connection gate', () => {
 /**
  * The CONNECTION gate above is necessary but not sufficient: what it admits can
  * still reach `grantHooksConsent()` — durable, machine-wide approval to modify
- * ~/.claude/settings.json plus a 12-event hook install.
+ * ~/.copilot/hooks/pixel-agents.json plus a Copilot hook install.
  *
  * Privilege is therefore decided by the server token carried in the handshake's
  * `?token=` query (httpServer's standaloneTokenValid), never by a network
@@ -239,7 +241,7 @@ describe('/ws connection gate', () => {
  * and it fell to a dumb LAN-bound TCP forwarder piping bytes verbatim to
  * 127.0.0.1, which presents the server exactly what the local SPA presents.
  * Reproduced against the real `dist/cli.js`: a client on another machine got
- * `consent=true` and 12 installed hook events. The forwarded attacker never has
+ * `consent=true` and installed Copilot hook events. The forwarded attacker never has
  * the token, because the token reaches the SPA only through the URL the CLI
  * printed in the operator's own terminal.
  *
@@ -256,7 +258,8 @@ describe('/ws privileged-message gate', () => {
   let sideEffects: boolean[];
 
   beforeEach(() => {
-    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-ws-priv-'));
+    tmpBase = newTestDirectory('pxl-ws-priv-');
+    vi.stubEnv('COPILOT_HOME', path.join(tmpBase, '.copilot'));
     fs.mkdirSync(path.join(tmpBase, '.pixel-agents'), { recursive: true });
     sideEffects = [];
     server = new PixelAgentsServer();
@@ -267,6 +270,7 @@ describe('/ws privileged-message gate', () => {
     sockets.length = 0;
     server?.stop();
     try {
+      vi.unstubAllEnvs();
       fs.rmSync(tmpBase, { recursive: true, force: true });
     } catch {
       /* ignore */
@@ -292,7 +296,7 @@ describe('/ws privileged-message gate', () => {
 
   /** Send setHooksEnabled over an accepted socket and let it settle. */
   async function sendToggle(socket: WebSocket, enabled: boolean): Promise<void> {
-    socket.send(JSON.stringify({ type: 'setHooksEnabled', providerId: 'claude', enabled }));
+    socket.send(JSON.stringify({ type: 'setHooksEnabled', providerId: 'copilot', enabled }));
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
@@ -321,7 +325,7 @@ describe('/ws privileged-message gate', () => {
   // previous peer-address model. A dumb LAN-bound TCP proxy piping bytes to
   // 127.0.0.1 makes the server see a loopback peer, and the remote client
   // forges a loopback Host — the exact pair the old gate accepted, reproduced
-  // against the real dist/cli.js (consent=true, 12 events installed). No token
+  // against the real dist/cli.js (consent=true, Copilot hooks installed). No token
   // rides the handshake, because the operator's URL never left their terminal.
   it('refuses setHooksEnabled from a loopback-terminating forwarder', async () => {
     const { port } = await startStandalone();
@@ -480,7 +484,7 @@ describe('/ws privileged-message gate', () => {
     expect(await request).toBeNull();
 
     result.socket.send(
-      JSON.stringify({ type: 'hooksConsentResponse', providerId: 'claude', choice: 'install' }),
+      JSON.stringify({ type: 'hooksConsentResponse', providerId: 'copilot', choice: 'install' }),
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(sideEffects).toEqual([]);
@@ -499,7 +503,7 @@ describe('/ws privileged-message gate', () => {
     sockets.push(result.socket);
 
     result.socket.send(
-      JSON.stringify({ type: 'hooksConsentResponse', providerId: 'claude', choice: 'install' }),
+      JSON.stringify({ type: 'hooksConsentResponse', providerId: 'copilot', choice: 'install' }),
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(sideEffects).toEqual([true]);

@@ -1,25 +1,23 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HookProvider } from '../../core/src/provider.js';
 import { AgentRuntime } from '../src/agentRuntime.js';
 import { AgentStateStore } from '../src/agentStateStore.js';
-import { JSONL_POLL_INTERVAL_MS } from '../src/constants.js';
-import { claudeProvider } from '../src/providers/hook/claude/claude.js';
+import { copilotProvider } from '../src/providers/hook/copilot/copilot.js';
+import { observation } from '../src/providers/hook/copilot/hooks/copilot-hook.js';
 import type { IPty, PtyModule, PtySpawnOptions } from '../src/terminal/ptyModule.js';
 import { PtySessionManager } from '../src/terminal/ptySessionManager.js';
 import { launchStandaloneAgent } from '../src/terminal/standaloneAgentLauncher.js';
+import { newTestDirectory } from './testSupport.js';
 
 /**
  * launchStandaloneAgent is the standalone counterpart of the VS Code adapter's
  * launchNewTerminal: it must register a store agent, spawn the provider's
  * launch command in a PTY, and clean everything up when that process exits.
- * These tests drive it with a REAL AgentRuntime + AgentStateStore (the launcher
- * mutates runtime maps directly, so faking them would just restate the
- * implementation) and a fake PTY module (spawning real processes would be slow
- * and platform-dependent -- see ptySessionManager.test.ts).
+ * These tests use a real runtime and store to catch routing regressions, with
+ * a fake PTY so they never launch an actual AI process.
  */
 
 class FakePty implements IPty {
@@ -66,16 +64,12 @@ function workingPtyManager(): PtyHarness {
 
 describe('launchStandaloneAgent', () => {
   let tempDir: string;
-  let projectDir: string;
   let store: AgentStateStore;
   let runtime: AgentRuntime;
   let broadcasts: Array<Record<string, unknown>>;
 
-  /** Real Claude provider with only the session-dir lookup redirected into the
-   *  test's temp dir, so buildLaunchCommand stays the production one and the
-   *  test asserts the actual launched command shape. */
   function provider(overrides: Partial<HookProvider> = {}): HookProvider {
-    return { ...claudeProvider, getSessionDirs: () => [projectDir], ...overrides };
+    return { ...copilotProvider, ...overrides };
   }
 
   function launch(harness: PtyHarness, options = {}): number | null {
@@ -86,11 +80,9 @@ describe('launchStandaloneAgent', () => {
   }
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-launcher-test-'));
-    projectDir = path.join(tempDir, 'project-sessions');
-    fs.mkdirSync(projectDir, { recursive: true });
+    tempDir = newTestDirectory('pxl-launcher-test-');
     store = new AgentStateStore();
-    runtime = new AgentRuntime(store, claudeProvider);
+    runtime = new AgentRuntime(store, copilotProvider);
     broadcasts = [];
     store.on('broadcast', (message) => broadcasts.push(message));
   });
@@ -104,6 +96,26 @@ describe('launchStandaloneAgent', () => {
 
   // ── Successful launch ────────────────────────────────────────
 
+  it('launches Copilot with separate session and runtime identities', () => {
+    const harness = workingPtyManager();
+    const id = launchStandaloneAgent(
+      { store, runtime, ptyManager: harness.manager, provider: copilotProvider },
+      { directoryPath: tempDir },
+    );
+    const agent = store.get(id!);
+    expect(harness.spawnArgs[0].file).toBe('copilot');
+    expect(harness.spawnArgs[0].args).toEqual(['--session-id', agent?.sessionId]);
+    expect(harness.spawnArgs[0].options.env?.PIXEL_AGENTS_COPILOT).toBe('1');
+    expect(agent?.hooksOnly).toBe(true);
+    expect(harness.spawnArgs[0].options.env?.PIXEL_AGENTS_COPILOT_SESSION_ID).toBe(
+      agent?.launchSessionId,
+    );
+    expect(agent?.launchSessionId).not.toBe(agent?.sessionId);
+    harness.spawned[0].exit();
+    expect(store.size).toBe(1);
+    expect(agent?.connected).toBe(false);
+  });
+
   it('spawns the provider launch command in a PTY and registers the agent', () => {
     const harness = workingPtyManager();
     const cwd = path.join(tempDir, 'workspace');
@@ -115,28 +127,26 @@ describe('launchStandaloneAgent', () => {
     const agent = store.get(1);
     expect(agent).toBeDefined();
     expect(agent?.isExternal).toBe(false);
-    expect(agent?.projectDir).toBe(projectDir);
-    expect(agent?.providerId).toBe(claudeProvider.id);
-    expect(agent?.jsonlFile).toBe(path.join(projectDir, `${agent?.sessionId}.jsonl`));
+    expect(agent?.projectDir).toBe(cwd);
+    expect(agent?.providerId).toBe(copilotProvider.id);
     // Palette is assigned server-side like every other creation path, so the
     // agentCreated broadcast carries it and a reload restores the same look
     // without the webview having to persist a client-side pick.
     expect(agent?.palette).toBeTypeOf('number');
     expect(agent?.hueShift).toBeTypeOf('number');
 
-    // The real claude launch command, spawned in the requested cwd.
+    // The real copilot launch command, spawned in the requested cwd.
 
     expect(harness.spawnArgs).toHaveLength(1);
-    expect(harness.spawnArgs[0].file).toBe('claude');
+    expect(harness.spawnArgs[0].file).toBe('copilot');
     expect(harness.spawnArgs[0].args).toEqual(['--session-id', agent?.sessionId]);
     expect(harness.spawnArgs[0].options.cwd).toBe(cwd);
     expect(harness.manager.has(1)).toBe(true);
 
-    // Pre-registered so the project scanner won't mistake the new JSONL for /clear.
-    expect(runtime.knownJsonlFiles.has(agent!.jsonlFile)).toBe(true);
     expect(runtime.activeAgentId.current).toBe(1);
 
-    // The UI learns a terminal exists so the drawer opens a tab.
+    expect(broadcasts).not.toContainEqual({ type: 'terminalSessionOpened', agentId: 1 });
+    runtime.nameSession(id!, 'Coder');
     expect(broadcasts).toContainEqual({ type: 'terminalSessionOpened', agentId: 1 });
   });
 
@@ -145,7 +155,49 @@ describe('launchStandaloneAgent', () => {
 
     launch(harness, { bypassPermissions: true });
 
-    expect(harness.spawnArgs[0].args).toContain('--dangerously-skip-permissions');
+    expect(harness.spawnArgs[0].args).toContain('--allow-all-tools');
+  });
+
+  it('resumes the exact old session in a separate PTY after the original CLI switches sessions', async () => {
+    const harness = workingPtyManager();
+    const firstId = launch(harness, { directoryPath: tempDir })!;
+    const first = store.get(firstId)!;
+    const sessionId = first.sessionId;
+    const palette = first.palette;
+    const originalTerminal = first.terminalAgentId!;
+    const originalRuntime = first.launchSessionId;
+    runtime.nameSession(firstId, 'First');
+    runtime.handleHookEvent('copilot', {
+      ...observation('sessionStart', { sessionId: 'switched-session', cwd: tempDir }),
+      launch_session_id: originalRuntime,
+    });
+    const second = [...store.values()].find((agent) => agent.sessionId === 'switched-session')!;
+    expect(second.terminalAgentId).toBe(originalTerminal);
+    expect(first.connected).toBe(false);
+    expect(second.characterName).toBeUndefined();
+    runtime.nameSession(second.id, 'Second');
+    await runtime.openSession(firstId, () => {
+      expect(launch(harness, { agentId: firstId })).toBe(firstId);
+    });
+    expect(harness.spawnArgs[1].args).toEqual(['--resume', sessionId]);
+    expect(first.characterName).toBe('First');
+    expect(first.palette).toBe(palette);
+    expect(first.terminalAgentId).not.toBe(originalTerminal);
+    expect(harness.spawned[0].killSignals).toHaveLength(0);
+    runtime.handleHookEvent('copilot', {
+      ...observation('userPromptSubmitted', { sessionId, cwd: tempDir }),
+      launch_session_id: first.launchSessionId,
+    });
+    runtime.handleHookEvent('copilot', {
+      ...observation('agentStop', { sessionId, cwd: tempDir }),
+      launch_session_id: originalRuntime,
+    });
+    expect(first.isTurnActive).toBe(true);
+    harness.spawned[0].exit();
+    expect(second.connected).toBe(false);
+    expect(first.connected).toBe(true);
+    expect(harness.manager.has(first.terminalAgentId!)).toBe(true);
+    harness.spawned[1].exit();
   });
 
   // ── Refusal paths (each must leave the store and id counter untouched) ──
@@ -159,42 +211,6 @@ describe('launchStandaloneAgent', () => {
     expect(store.size).toBe(0);
     expect(store.nextAgentId.current).toBe(1);
     expect(broadcasts).toHaveLength(0);
-  });
-
-  it('returns null when the provider cannot build a launch command', () => {
-    const harness = workingPtyManager();
-
-    const id = launchStandaloneAgent(
-      {
-        store,
-        runtime,
-        ptyManager: harness.manager,
-        provider: provider({ buildLaunchCommand: undefined }),
-      },
-      {},
-    );
-
-    expect(id).toBeNull();
-    expect(store.size).toBe(0);
-    expect(harness.spawnArgs).toHaveLength(0);
-  });
-
-  it('returns null when the provider returns no session dirs', () => {
-    const harness = workingPtyManager();
-
-    const id = launchStandaloneAgent(
-      {
-        store,
-        runtime,
-        ptyManager: harness.manager,
-        provider: provider({ getSessionDirs: () => [] }),
-      },
-      {},
-    );
-
-    expect(id).toBeNull();
-    expect(store.size).toBe(0);
-    expect(harness.spawnArgs).toHaveLength(0);
   });
 
   it('rolls back the agent id when the PTY spawn throws', () => {
@@ -214,59 +230,15 @@ describe('launchStandaloneAgent', () => {
 
   // ── Process exit cleanup ─────────────────────────────────────
 
-  it('removes the agent and announces the close when the process exits', () => {
+  it('retains the session offline and announces terminal closure when the process exits', () => {
     const harness = workingPtyManager();
     const id = launch(harness)!;
 
     harness.spawned[0].exit(3);
 
     expect(broadcasts).toContainEqual({ type: 'terminalSessionClosed', agentId: id, exitCode: 3 });
-    expect(store.has(id)).toBe(false);
+    expect(store.has(id)).toBe(true);
+    expect(store.get(id)?.connected).toBe(false);
     expect(harness.manager.has(id)).toBe(false);
-  });
-
-  it("removes the Lead's teammates when its process exits", () => {
-    const harness = workingPtyManager();
-    const id = launch(harness)!;
-    const lead = store.get(id)!;
-    store.set(id + 1, { ...lead, id: id + 1, leadAgentId: id, agentName: 'review-helper' });
-
-    harness.spawned[0].exit(0);
-
-    expect(store.has(id)).toBe(false);
-    expect(store.has(id + 1)).toBe(false);
-  });
-
-  // ── JSONL adoption poll ──────────────────────────────────────
-
-  it('starts watching the session JSONL once it appears', () => {
-    vi.useFakeTimers();
-    const harness = workingPtyManager();
-    const id = launch(harness)!;
-    const agent = store.get(id)!;
-
-    // File not there yet: the poll stays armed.
-    vi.advanceTimersByTime(JSONL_POLL_INTERVAL_MS);
-    expect(runtime.jsonlPollTimers.has(id)).toBe(true);
-
-    fs.writeFileSync(agent.jsonlFile, '');
-    vi.advanceTimersByTime(JSONL_POLL_INTERVAL_MS);
-
-    expect(runtime.jsonlPollTimers.has(id)).toBe(false);
-    expect(runtime.pollingTimers.has(id)).toBe(true);
-  });
-
-  it('does not adopt the JSONL of an agent that was closed while polling', () => {
-    vi.useFakeTimers();
-    const harness = workingPtyManager();
-    const id = launch(harness)!;
-    const agent = store.get(id)!;
-
-    runtime.removeAgent(id);
-    fs.writeFileSync(agent.jsonlFile, '');
-    vi.advanceTimersByTime(JSONL_POLL_INTERVAL_MS);
-
-    expect(runtime.jsonlPollTimers.has(id)).toBe(false);
-    expect(runtime.pollingTimers.has(id)).toBe(false);
   });
 });

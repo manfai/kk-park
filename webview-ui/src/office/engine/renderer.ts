@@ -394,7 +394,13 @@ export function renderScene(
     // Sort characters by bottom of their tile (not center) so they render
     // in front of same-row furniture (e.g. chairs) but behind furniture
     // at lower rows (e.g. desks, bookshelves that occlude from below).
-    const charZY = ch.y + TILE_SIZE / 2 + CHARACTER_Z_SORT_OFFSET;
+    const cage =
+      ch.isArchived && ch.path.length === 0 && ch.archiveCageId
+        ? furniture.find((item) => item.uid === ch.archiveCageId)
+        : undefined;
+    const charZY = cage
+      ? cage.zY - CHARACTER_Z_SORT_OFFSET
+      : ch.y + TILE_SIZE / 2 + CHARACTER_Z_SORT_OFFSET;
 
     // Headless agents (adopted, no terminal to focus) render translucent while
     // the "Display headless as ghosts" setting is on.

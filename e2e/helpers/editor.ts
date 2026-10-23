@@ -2,7 +2,7 @@
  * Layout-editor driving helpers for the carpet, area and editor e2e specs.
  *
  * Tool selection goes through the REAL toolbar UI (same path a user takes).
- * Tile painting goes through `window.__pixelAgentsTestHooks.editorTileAction`
+ * Tile painting goes through `globalThis.window.__pixelAgentsTestHooks.editorTileAction`
  * / `.editorEraseAction`, which call the same App-level handlers the canvas
  * calls — bypassing ONLY canvas pixel→tile geometry (mirrors the pets fixture's
  * petClick, see webview-ui/src/testHooks.ts). `dropFurnitureAt` bypasses more:
@@ -19,6 +19,16 @@ import { expect } from '@playwright/test';
 /** The carpet/area observability surface installed under the isE2E guard. */
 export interface TestHooksWindow extends Window {
   __pixelAgentsTestHooks?: {
+    getCharacters?: () => Array<{
+      id: number;
+      isArchived?: boolean;
+      archiveCageId?: string;
+      x: number;
+      y: number;
+      tileCol: number;
+      tileRow: number;
+      state: string;
+    }>;
     getCarpetTiles?: () => Array<{
       col: number;
       row: number;
@@ -173,7 +183,8 @@ export async function selectArea(frame: Frame, label: string): Promise<void> {
 /** Paint a tile with the active tool via the real tile-action handler (by col,row). */
 export async function paintTile(frame: Frame, col: number, row: number): Promise<void> {
   await frame.evaluate(
-    ([c, r]) => (window as TestHooksWindow).__pixelAgentsTestHooks?.editorTileAction?.(c, r),
+    ([c, r]) =>
+      (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.editorTileAction?.(c, r),
     [col, row] as const,
   );
 }
@@ -181,7 +192,8 @@ export async function paintTile(frame: Frame, col: number, row: number): Promise
 /** Erase a tile with the active tool via the real erase-action handler (by col,row). */
 export async function eraseTile(frame: Frame, col: number, row: number): Promise<void> {
   await frame.evaluate(
-    ([c, r]) => (window as TestHooksWindow).__pixelAgentsTestHooks?.editorEraseAction?.(c, r),
+    ([c, r]) =>
+      (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.editorEraseAction?.(c, r),
     [col, row] as const,
   );
 }
@@ -218,7 +230,10 @@ async function tilePagePoint(frame: Frame, col: number, row: number) {
   if (!box) throw new Error('office canvas is not rendered');
   const local = await frame.evaluate(
     ([c, r]) => {
-      const center = (window as TestHooksWindow).__pixelAgentsTestHooks?.getTileCenter?.(c, r);
+      const center = (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getTileCenter?.(
+        c,
+        r,
+      );
       const canvas = document.querySelector('[data-testid="office-canvas"]');
       if (!center || !canvas) return null;
       const rect = canvas.getBoundingClientRect();
@@ -290,7 +305,7 @@ export async function dropFurnitureAt(
 ): Promise<void> {
   await frame.evaluate(
     ([u, c, r, d]) =>
-      (window as TestHooksWindow).__pixelAgentsTestHooks?.editorDrop?.(
+      (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.editorDrop?.(
         u as string,
         c as number,
         r as number,
@@ -318,7 +333,7 @@ export async function saveLayout(frame: Frame): Promise<void> {
 /** Read the TileType values at the given (col,row) pairs, in order. */
 export async function readTilesAt(frame: Frame, cells: Array<[number, number]>): Promise<number[]> {
   return frame.evaluate((pairs) => {
-    const grid = (window as TestHooksWindow).__pixelAgentsTestHooks?.getTiles?.();
+    const grid = (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getTiles?.();
     if (!grid) return [];
     return pairs.map(([c, r]) => grid.tiles[r * grid.cols + c]);
   }, cells);
@@ -327,7 +342,7 @@ export async function readTilesAt(frame: Frame, cells: Array<[number, number]>):
 /** Read placed furniture (uid + type + grid coords + colour) from the test hook. */
 export async function readFurniture(frame: Frame): Promise<PlacedItem[]> {
   return frame.evaluate(
-    () => (window as TestHooksWindow).__pixelAgentsTestHooks?.getFurniture?.() ?? [],
+    () => (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getFurniture?.() ?? [],
   );
 }
 
@@ -355,11 +370,13 @@ export async function readCarpetTiles(
 ): Promise<Array<{ col: number; row: number; variant: number }>> {
   return frame.evaluate(
     () =>
-      (window as TestHooksWindow).__pixelAgentsTestHooks?.getCarpetTiles?.().map((t) => ({
-        col: t.col,
-        row: t.row,
-        variant: t.variant,
-      })) ?? [],
+      (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks
+        ?.getCarpetTiles?.()
+        .map((t) => ({
+          col: t.col,
+          row: t.row,
+          variant: t.variant,
+        })) ?? [],
   );
 }
 
@@ -372,7 +389,11 @@ export async function readCarpetJunctionCase(
 ): Promise<number> {
   return frame.evaluate(
     ([x, y, v]) =>
-      (window as TestHooksWindow).__pixelAgentsTestHooks?.getCarpetJunctionCase?.(x, y, v) ?? 0,
+      (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getCarpetJunctionCase?.(
+        x,
+        y,
+        v,
+      ) ?? 0,
     [jx, jy, variant] as const,
   );
 }
@@ -382,14 +403,14 @@ export async function readAreaTiles(
   frame: Frame,
 ): Promise<Array<{ col: number; row: number; label: string }>> {
   return frame.evaluate(
-    () => (window as TestHooksWindow).__pixelAgentsTestHooks?.getAreaTiles?.() ?? [],
+    () => (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getAreaTiles?.() ?? [],
   );
 }
 
 /** Read the Area definitions from the test hook. */
 export async function readAreas(frame: Frame): Promise<Array<{ label: string; color: string }>> {
   return frame.evaluate(
-    () => (window as TestHooksWindow).__pixelAgentsTestHooks?.getAreas?.() ?? [],
+    () => (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getAreas?.() ?? [],
   );
 }
 
@@ -400,7 +421,7 @@ export async function readSeats(
   Array<{ uid: string; col: number; row: number; areaLabel: string | null; assigned: boolean }>
 > {
   return frame.evaluate(
-    () => (window as TestHooksWindow).__pixelAgentsTestHooks?.getSeats?.() ?? [],
+    () => (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getSeats?.() ?? [],
   );
 }
 
@@ -411,6 +432,6 @@ export async function readAgentSeats(
   Array<{ id: number; seatId: string | null; areaLabel: string | null; directoryName?: string }>
 > {
   return frame.evaluate(
-    () => (window as TestHooksWindow).__pixelAgentsTestHooks?.getAgentSeats?.() ?? [],
+    () => (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getAgentSeats?.() ?? [],
   );
 }

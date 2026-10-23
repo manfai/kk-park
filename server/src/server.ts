@@ -87,6 +87,7 @@ export class PixelAgentsServer {
       ? undefined
       : {
           terminal: options?.ptyManager?.enabled ?? false,
+          providerId: options?.runtime?.provider.id,
           host,
           allowedHosts: normalizedAllowedHosts(options?.allowedHosts ?? []),
         };
@@ -110,7 +111,10 @@ export class PixelAgentsServer {
       }
     }
     const candidate = registry.find(
-      (e) => e.servesSpa === wantsSpa && sameStandaloneAccess(e.standalone, standalone),
+      (e) =>
+        e.servesSpa === wantsSpa &&
+        e.providerId === (options?.runtime?.provider.id ?? 'copilot') &&
+        sameStandaloneAccess(e.standalone, standalone),
     );
     if (candidate) {
       this.config = candidate;
@@ -153,6 +157,7 @@ export class PixelAgentsServer {
       token,
       startedAt: Date.now(),
       servesSpa: wantsSpa,
+      providerId: options?.runtime?.provider.id ?? 'copilot',
       protocol: SERVER_REGISTRY_PROTOCOL_VERSION,
       ...(standalone ? { standalone } : {}),
       // Diagnostic-only: forward the debug-log path to the hook script via

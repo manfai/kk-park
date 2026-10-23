@@ -2,7 +2,6 @@ import type { Terminal } from '@xterm/xterm';
 
 import { writeClipboardText } from './clipboard.js';
 import { clipboardKeyAction, decodeOsc52 } from './clipboardKeys.js';
-import { terminalCopyText } from './flowCopy.js';
 
 const OSC_CLIPBOARD = 52;
 
@@ -13,8 +12,6 @@ const OSC_CLIPBOARD = 52;
  * - every copy of a selection is verbatim: Cmd+C and the browser's Copy are
  *   xterm's own copy handler, Ctrl+C / Ctrl+Shift+C (Windows, Linux) go
  *   through writeClipboardText;
- * - Alt+C (Option+C on a Mac) with a selection is "Copy as text": the
- *   selection with Claude Code's soft wraps re-flowed (terminalCopyText);
  * - Ctrl+V / Ctrl+Shift+V paste on Windows and Linux;
  * - OSC 52 writes from the running program reach this browser's clipboard.
  *
@@ -32,16 +29,13 @@ export function attachClipboardInput(
   term.attachCustomKeyEventHandler((ev) => {
     const action = clipboardKeyAction(ev, isMac, term.hasSelection());
     if (action === 'terminal') return true;
-    if (ev.type === 'keydown' && (action === 'copy' || action === 'copyText')) {
-      // Prevented: Ctrl+Shift+C would open DevTools, Option+C would type ç.
+    if (ev.type === 'keydown' && action === 'copy') {
+      // Prevented: Ctrl+Shift+C would open DevTools.
       // Written synchronously from the key press, which is the user gesture
       // the plain-http fallback needs; the selection goes once it landed.
       ev.preventDefault();
       if (term.hasSelection()) {
-        const startCol = (term.getSelectionPosition()?.start.x ?? 1) - 1;
-        const mode = action === 'copy' ? 'verbatim' : 'text';
-        const text = terminalCopyText(term.getSelection(), mode, term.cols, startCol);
-        void writeClipboardText(text).then((ok) => {
+        void writeClipboardText(term.getSelection()).then((ok) => {
           if (ok) term.clearSelection();
         });
       }

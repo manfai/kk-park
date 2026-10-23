@@ -43,19 +43,23 @@ export function findPath(
   tileMap: TileType[][],
   blockedTiles: Set<string>,
 ): Array<{ col: number; row: number }> {
-  if (startCol === endCol && startRow === endRow) return [];
+  if (!isWalkable(endCol, endRow, tileMap, blockedTiles)) return [];
+  return (
+    findNearestPath(startCol, startRow, tileMap, blockedTiles, new Set([`${endCol},${endRow}`])) ??
+    []
+  );
+}
 
+/** BFS chooses the closest reachable destination by walking distance. */
+export function findNearestPath(
+  startCol: number,
+  startRow: number,
+  tileMap: TileType[][],
+  blockedTiles: Set<string>,
+  destinations: ReadonlySet<string>,
+): Array<{ col: number; row: number }> | null {
   const key = (c: number, r: number) => `${c},${r}`;
   const startKey = key(startCol, startRow);
-  const endKey = key(endCol, endRow);
-
-  // End must be walkable (or be a chair tile which may be adjacent to desk)
-  // We allow the end tile even if it's not strictly walkable for chair positions
-  const endWalkable = isWalkable(endCol, endRow, tileMap, blockedTiles);
-  if (!endWalkable) {
-    // If the end is a desk tile, we still can't path there
-    return [];
-  }
 
   const visited = new Set<string>();
   visited.add(startKey);
@@ -74,10 +78,10 @@ export function findPath(
     const curr = queue.shift()!;
     const currKey = key(curr.col, curr.row);
 
-    if (currKey === endKey) {
+    if (destinations.has(currKey)) {
       // Reconstruct path
       const path: Array<{ col: number; row: number }> = [];
-      let k = endKey;
+      let k = currKey;
       while (k !== startKey) {
         const [c, r] = k.split(',').map(Number);
         path.unshift({ col: c, row: r });
@@ -101,5 +105,5 @@ export function findPath(
   }
 
   // No path found
-  return [];
+  return null;
 }

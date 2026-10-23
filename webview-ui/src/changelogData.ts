@@ -63,9 +63,6 @@ export const changelogEntries: ChangelogEntry[] = [
       {
         title: 'Features',
         items: [
-          'Claude Code Agent Teams visualization with lead badges, role labels, and coordinated lifecycle',
-          'Claude Code 2.1.220 support: named spawns become seated teammates, unnamed spawns stay watched sub-agents',
-          'Context gauge on every agent, sized to the model its session runs',
           'Animated pets with saved placement, petting interactions, and external pet packs',
           'Auto-tiling carpets with color controls, painting tools, undo, and persistence',
           'Workspace Areas that map folders to office zones and guide agent seating',
@@ -84,13 +81,11 @@ export const changelogEntries: ChangelogEntry[] = [
       {
         title: 'Fixes',
         items: [
-          'Preserve agent tracking across terminal moves and align teammate lifecycle behavior',
           'Honor explicit standalone ports and restore browser-mock hot reload',
           'Improve Areas seating for custom-named folders and polish editor layouts',
-          'Fix duplicate agent adoption on Windows and a /clear session reassignment race',
           'Render restored agents reliably, in VS Code and on standalone reconnect',
           'Surface hook install failures instead of logging false success',
-          'Fix the Windows build for paths with spaces and keep JSONL discovery active with hooks',
+          'Fix the Windows build for paths with spaces',
         ],
       },
       {
@@ -125,7 +120,7 @@ export const changelogEntries: ChangelogEntry[] = [
       {
         name: '@snvtac',
         url: 'https://github.com/snvtac',
-        description: 'Workspace JSONL discovery with hooks enabled',
+        description: 'Earlier session-discovery contributions',
       },
       {
         name: '@bezzborodth-tech',
@@ -145,24 +140,23 @@ export const changelogEntries: ChangelogEntry[] = [
       {
         name: '@ErickGross-19',
         url: 'https://github.com/ErickGross-19',
-        description: 'Early Agent Teams implementation that informed the shipped design',
+        description: 'Earlier agent-visualization contributions',
       },
       {
         name: '@ZenidX',
         url: 'https://github.com/ZenidX',
-        description: 'Early Agent Teams implementation that informed the shipped design',
+        description: 'Earlier agent-visualization contributions',
       },
       {
         name: '@pablodelucca',
         url: 'https://github.com/pablodelucca',
-        description:
-          'Claude 2.1.220 sub-agents and teammates, context gauge, Workspace Areas, layout-editor polish, narrated e2e review',
+        description: 'Workspace Areas, layout-editor polish, narrated e2e review',
       },
       {
         name: '@florintimbuc',
         url: 'https://github.com/florintimbuc',
         description:
-          'Architecture, Agent Teams, standalone, multi-server, file-watcher and CI hardening, e2e, and release work',
+          'Architecture, standalone, multi-server and CI hardening, e2e, and release work',
       },
     ],
   },
@@ -172,19 +166,13 @@ export const changelogEntries: ChangelogEntry[] = [
       {
         title: 'Features',
         items: [
-          'Hooks-first session management with dual-mode architecture (hooks + heuristic fallback)',
-          'Claude Code hooks for instant agent status detection',
-          'External session support and Agent tool recognition',
-          'Multi-root workspace agent detection across all workspace folders',
           'Load custom characters from external asset directories',
           'Tailwind CSS v4 migration for the webview UI',
         ],
       },
       {
         title: 'Fixes',
-        items: [
-          'Prevent duplicate restores, fix tool status reconnect, improve agent tool detection',
-        ],
+        items: ['Prevent duplicate restores and fix tool status reconnect'],
       },
       {
         title: 'Maintenance',
@@ -198,7 +186,7 @@ export const changelogEntries: ChangelogEntry[] = [
       {
         name: '@drewf',
         url: 'https://github.com/drewf',
-        description: 'External session support and Agent tool recognition',
+        description: 'Earlier external-session support',
       },
       {
         name: '@Commandershadow9',
@@ -223,17 +211,17 @@ export const changelogEntries: ChangelogEntry[] = [
       {
         name: '@pablodelucca',
         url: 'https://github.com/pablodelucca',
-        description: 'Claude Code hooks integration, Tailwind v4 migration',
+        description: 'Earlier hooks integration, Tailwind v4 migration',
       },
       {
         name: '@NNTin',
         url: 'https://github.com/NNTin',
-        description: 'Claude Code hooks integration, Tailwind v4 migration',
+        description: 'Earlier hooks integration, Tailwind v4 migration',
       },
       {
         name: '@florintimbuc',
         url: 'https://github.com/florintimbuc',
-        description: 'Hooks-first dual-mode architecture, review coordination',
+        description: 'Earlier hooks architecture, review coordination',
       },
     ],
   },
@@ -243,21 +231,16 @@ export const changelogEntries: ChangelogEntry[] = [
       {
         title: 'Features',
         items: [
-          'Bypass permissions mode — right-click "+ Agent" to skip tool approvals',
           'External asset packs — load furniture from user-defined directories',
-          'Improved seating, sub-agent spawning, and background agent support',
+          'Improved seating',
           'Always show overlay setting for agent labels',
-          'Agent connection diagnostics and JSONL parser resilience',
+          'Agent connection diagnostics',
           'Browser preview mode for development and review',
         ],
       },
       {
         title: 'Fixes',
         items: ['Agents not appearing on Linux Mint/macOS when no folder is open'],
-      },
-      {
-        title: 'Testing',
-        items: ['Playwright e2e tests with mock Claude CLI'],
       },
       {
         title: 'Maintenance',
@@ -296,7 +279,7 @@ export const changelogEntries: ChangelogEntry[] = [
       {
         name: '@florintimbuc',
         url: 'https://github.com/florintimbuc',
-        description: 'Agent diagnostics, JSONL resilience, CI improvements',
+        description: 'Agent diagnostics and CI improvements',
       },
     ],
   },

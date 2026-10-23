@@ -1,37 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { createAgentState } from '../src/agentState.js';
 import { AgentStateStore } from '../src/agentStateStore.js';
 import { HUE_SHIFT_MAX_DEG, PALETTE_COUNT } from '../src/constants.js';
 import { assignPaletteIfNeeded, setPaletteCount } from '../src/paletteAssigner.js';
 import type { AgentState } from '../src/types.js';
 
 function createTestAgent(overrides: Partial<AgentState> = {}): AgentState {
-  return {
+  return createAgentState({
     id: 1,
     sessionId: 'sess-1',
-    terminalRef: undefined,
-    isExternal: false,
     projectDir: '/test',
-    jsonlFile: '/test/session.jsonl',
-    fileOffset: 0,
-    lineBuffer: '',
-    activeToolIds: new Set(),
-    activeToolStatuses: new Map(),
-    activeToolNames: new Map(),
-    activeSubagentToolIds: new Map(),
-    activeSubagentToolNames: new Map(),
-    backgroundAgentToolIds: new Set(),
-    isWaiting: false,
-    permissionSent: false,
-    hadToolsInTurn: false,
-    lastDataAt: 0,
-    linesProcessed: 0,
-    seenUnknownRecordTypes: new Set(),
-    hookDelivered: false,
-    contextTokens: 0,
-    maxContextTokens: 200_000,
+    isExternal: false,
     ...overrides,
-  } as AgentState;
+  });
 }
 
 describe('paletteAssigner', () => {

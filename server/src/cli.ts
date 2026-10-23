@@ -32,7 +32,7 @@ import {
   WILDCARD_HOSTNAMES,
 } from './constants.js';
 import { FileStateAdapter } from './fileStateAdapter.js';
-import { claudeProvider, copyHookScript, hookProviderById } from './providers/index.js';
+import { copilotProvider, copyCopilotHookScript, hookProviderById } from './providers/index.js';
 import { PixelAgentsServer } from './server.js';
 import { PtySessionManager } from './terminal/ptySessionManager.js';
 import { isLoopbackHost, normalizeHostname } from './wsAuth.js';
@@ -40,6 +40,7 @@ import { isLoopbackHost, normalizeHostname } from './wsAuth.js';
 // ── Argument parsing ──────────────────────────────────────────
 
 export interface CliArgs {
+  provider: string;
   /** Unset -> ephemeral (OS-assigned) port, so multiple standalone instances
    *  can run at once without a collision. --port picks a fixed one. */
   port?: number;
@@ -66,9 +67,14 @@ export function parseArgs(argv: string[]): CliArgs {
     terminal: true,
     allowedHosts: [],
     rotateToken: false,
+    provider: copilotProvider.id,
   };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--port' || argv[i] === '-p') {
+    if (argv[i] === '--provider') {
+      const provider = hookProviderById(argv[++i]);
+      if (!provider) throw new CliArgsError('Invalid --provider: expected copilot.');
+      args.provider = provider.id;
+    } else if (argv[i] === '--port' || argv[i] === '-p') {
       const raw = argv[i + 1];
       if (raw === undefined) {
         throw new CliArgsError(
@@ -106,6 +112,7 @@ export function parseArgs(argv: string[]): CliArgs {
       console.log(`Usage: pixel-agents [options]
 
 Options:
+  --provider <name>     CLI to track and launch: copilot (default)
   --port, -p <number>   Port to listen on (default: OS-assigned ephemeral port)
   --host <string>       Host to bind to (default: 127.0.0.1)
   --allowed-host <name> Also accept the tokened URL at this host name, e.g. a
@@ -130,20 +137,6 @@ Options:
 // prompts; a headless run just starts without hooks until consent is granted
 // through the UI. The one exception that needs no dialog is the silent-grant
 // migration below (our hooks already installed by a pre-consent version).
-
-/**
- * Copy the bundled hook script into ~/.pixel-agents/hooks/, reporting failure.
- *
- * Callers run this BEFORE installing the settings.json entries and abort when
- * it returns false: an entry whose command points at a missing script makes
- * Claude Code spawn a dead `node` process for every event, which is strictly
- * worse than no hooks at all.
- */
-function copyHookScriptOrReport(packageRoot: string, context = ''): boolean {
-  if (copyHookScript(packageRoot)) return true;
-  console.error(`[Pixel Agents] Hooks NOT installed${context}: hook script missing.`);
-  return false;
-}
 
 // ── Terminal status reporting ─────────────────────────────────
 
@@ -227,7 +220,7 @@ async function main(): Promise<void> {
 
   // ── Store + adapter (shared settings + standalone-scoped agents/seats) ──
   const store = new AgentStateStore();
-  const adapter = new FileStateAdapter({ namespace: 'standalone' });
+  const adapter = new FileStateAdapter({ namespace: 'standalone', providerId: args.provider });
   store.setAdapter(adapter);
 
   // ── Create server ──
@@ -244,7 +237,9 @@ async function main(): Promise<void> {
 
   try {
     // Create runtime first (before server.start, so we can pass it in)
-    const runtime = new AgentRuntime(store, claudeProvider);
+    const provider = hookProviderById(args.provider)!;
+    const runtime = new AgentRuntime(store, provider);
+    runtime.trackWorkingDirectory(process.cwd());
 
     // Wire hook events: HTTP POST -> runtime -> hookEventHandler -> agents
     server.onHookEvent((providerId, event) => {
@@ -260,18 +255,9 @@ async function main(): Promise<void> {
       const provider = hookProviderById(providerId);
       if (!provider) return; // unknown id: nothing to install into
       if (enabled) {
-        // An explicit toggle in the UI IS the consent to modify the
-        // provider's settings file. The bundled claude-hook.js script belongs
-        // to the Claude provider alone; another provider's install must
-        // neither copy it nor be blocked by it.
         grantHooksConsent(provider.id);
-        if (
-          provider.id === claudeProvider.id &&
-          !copyHookScriptOrReport(packageRoot, ' (user toggle)')
-        ) {
-          return;
-        }
         try {
+          copyCopilotHookScript(packageRoot);
           await provider.installHooks(
             `http://127.0.0.1:${currentConfig.port}`,
             currentConfig.token,
@@ -351,38 +337,32 @@ async function main(): Promise<void> {
 
     reportTerminalStatus(ptyManager, args.host, args.terminal);
 
-    // Sync runtime refs with persisted settings BEFORE first scan tick. The
-    // runtime's single hooksEnabled ref follows the Claude provider until the
-    // scanners grow per-provider awareness alongside the Settings UI.
-    runtime.hooksEnabled.current = getHooksEnabled(claudeProvider.id);
+    // Sync the persisted hooks and adoption preferences.
+    runtime.hooksEnabled.current = getHooksEnabled(provider.id);
     runtime.watchAllSessions.current = adapter.getSetting('pixel-agents.watchAllSessions', false);
 
     // Install hooks on startup if the persisted setting says so — gated on the
-    // one-time consent to modify ~/.claude/settings.json.
+    // one-time consent to create the Copilot hook file.
     if (runtime.hooksEnabled.current) {
-      let consent = getHooksConsent(claudeProvider.id) === 'granted';
-      if (!consent && (await claudeProvider.areHooksInstalled())) {
-        // Our hooks are already installed and already firing — a pre-consent
-        // version put them there. Grant and continue with NO prompt: the
-        // install below is the 14 -> 12 migration, and it only ever REDUCES
-        // scope (it drops UserPromptSubmit and TaskCreated, the two events that
-        // forwarded prompt text and were consumed by nothing). Asking would buy
-        // this user no protection they do not already have, so they are not
-        // asked. A fresh install still is, in full — in the browser UI, when a
-        // tokened client connects (clientMessageHandler's webviewReady).
-        grantHooksConsent(claudeProvider.id);
+      let consent = getHooksConsent(provider.id) === 'granted';
+      if (!consent && (await provider.areHooksInstalled())) {
+        // Recognized existing installs already have permission to report.
+        grantHooksConsent(provider.id);
         consent = true;
       }
       if (!consent) {
         console.log(
-          '[Pixel Agents] Hooks not installed: modifying ~/.claude/settings.json needs one-time approval — open the URL below to review and approve it.',
+          `[Pixel Agents] ${provider.displayName} hook installation needs one-time approval — open the URL below to review and approve installation.`,
         );
-      } else if (copyHookScriptOrReport(packageRoot)) {
+      } else {
         try {
-          await claudeProvider.installHooks(`http://127.0.0.1:${config.port}`, config.token);
+          copyCopilotHookScript(packageRoot);
+          await provider.installHooks(`http://127.0.0.1:${config.port}`, config.token);
           console.log('[Pixel Agents] Hooks installed');
         } catch (err) {
-          console.error(`[Pixel Agents] ${err instanceof Error ? err.message : String(err)}`);
+          console.error(
+            `[Pixel Agents] Hooks NOT installed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
     } else {
@@ -391,17 +371,6 @@ async function main(): Promise<void> {
       console.log(
         '[Pixel Agents] Hooks disabled — enable "Instant Detection (Hooks)" in the UI settings to install them.',
       );
-    }
-
-    // Start scanning for external sessions (Claude running in user's terminal)
-    const cwd = process.cwd();
-    const dirs = claudeProvider.getSessionDirs?.(cwd);
-    if (dirs && dirs[0]) {
-      const projectDir = dirs[0];
-      console.log(`[Pixel Agents] Scanning project dir: ${projectDir}`);
-      runtime.startProjectScan(projectDir);
-      runtime.startExternalScanning(projectDir);
-      runtime.startStaleCheck();
     }
 
     // The URL the operator opens has to be REACHABLE (a wildcard bind address
@@ -442,7 +411,7 @@ async function main(): Promise<void> {
 
 // Only auto-run when this file is executed directly (`node dist/cli.js`), not
 // when it's imported for its exports (e.g. `parseArgs` in tests) -- importing
-// it unconditionally used to start a real server and install real Claude
+// it unconditionally used to start a real server and install user
 // hooks as a side effect of module load.
 if (require.main === module) {
   main().catch((err) => {

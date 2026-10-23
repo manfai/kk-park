@@ -3,18 +3,8 @@ import * as path from 'path';
 /**
  * Canonical key for a filesystem path used as a Map/Set key or compared for identity.
  *
- * The same JSONL transcript reaches the runtime through two producers that spell it
- * differently on Windows:
- *
- *  - hooks carry `transcript_path` derived from Claude's own `process.cwd()`
- *    (`...\projects\C--Users-me-project\<id>.jsonl`)
- *  - the scanners build paths from the workspace folder VS Code reports, and
- *    `Uri.fsPath` lowercases the drive letter
- *    (`...\projects\c--Users-me-project\<id>.jsonl`)
- *
- * Windows resolves both to the same file, so `readdirSync` happily returns entries
- * under either spelling — but `Map`/`Set` lookups are exact-string and miss, which
- * previously let dismissed files be re-adopted and let one session spawn two agents.
+ * Hooks and VS Code may spell the same Windows working directory with different
+ * casing. Normalize before comparing scope or using a directory as a Map/Set key.
  */
 export function toPathKey(p: string): string {
   if (!p) return p;

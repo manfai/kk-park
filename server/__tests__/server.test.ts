@@ -1,7 +1,8 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { newTestDirectory } from './testSupport.js';
 
 // Use isolated temp HOME to avoid touching real ~/.pixel-agents/
 let tmpBase: string;
@@ -31,7 +32,7 @@ async function postHook(
   port: number,
   token: string,
   body: string,
-  providerId = 'claude',
+  providerId = 'copilot',
 ): Promise<Response> {
   return fetch(`http://127.0.0.1:${port}/api/hooks/${providerId}`, {
     method: 'POST',
@@ -47,7 +48,8 @@ describe('PixelAgentsServer', () => {
   let server: InstanceType<typeof PixelAgentsServer>;
 
   beforeEach(() => {
-    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-server-test-'));
+    tmpBase = newTestDirectory('pxl-server-test-');
+    vi.stubEnv('COPILOT_HOME', path.join(tmpBase, '.copilot'));
     serverJsonDir = path.join(tmpBase, '.pixel-agents');
     serverJsonPath = path.join(serverJsonDir, 'server.json');
     registryDir = path.join(serverJsonDir, 'servers');
@@ -58,6 +60,7 @@ describe('PixelAgentsServer', () => {
   afterEach(() => {
     server?.stop();
     try {
+      vi.unstubAllEnvs();
       fs.rmSync(tmpBase, { recursive: true, force: true });
     } catch {
       /* ignore */
@@ -87,7 +90,7 @@ describe('PixelAgentsServer', () => {
   // 3. Hook endpoint requires auth
   it('hook endpoint returns 401 without auth', async () => {
     const config = await server.start();
-    const res = await fetch(`http://127.0.0.1:${config.port}/api/hooks/claude`, {
+    const res = await fetch(`http://127.0.0.1:${config.port}/api/hooks/copilot`, {
       method: 'POST',
       body: '{}',
     });
@@ -100,7 +103,7 @@ describe('PixelAgentsServer', () => {
     const res = await postHook(
       config.port,
       config.token,
-      JSON.stringify({ session_id: 'test', hook_event_name: 'Stop' }),
+      JSON.stringify({ session_id: 'test', hook_event_name: 'agentStop' }),
     );
     expect(res.status).toBe(200);
   });
@@ -116,13 +119,13 @@ describe('PixelAgentsServer', () => {
     await postHook(
       config.port,
       config.token,
-      JSON.stringify({ session_id: 'abc', hook_event_name: 'Stop' }),
+      JSON.stringify({ session_id: 'abc', hook_event_name: 'agentStop' }),
     );
 
     expect(received).toHaveLength(1);
-    expect(received[0].providerId).toBe('claude');
+    expect(received[0].providerId).toBe('copilot');
     expect(received[0].event.session_id).toBe('abc');
-    expect(received[0].event.hook_event_name).toBe('Stop');
+    expect(received[0].event.hook_event_name).toBe('agentStop');
   });
 
   // 6. Hook endpoint rejects oversized body
@@ -406,7 +409,7 @@ describe('PixelAgentsServer', () => {
     await postHook(
       config.port,
       config.token,
-      JSON.stringify({ hook_event_name: 'Stop' }), // missing session_id
+      JSON.stringify({ hook_event_name: 'agentStop' }), // missing session_id
     );
 
     expect(received).toHaveLength(0);

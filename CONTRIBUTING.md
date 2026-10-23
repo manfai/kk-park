@@ -8,7 +8,7 @@ This project is licensed under the [MIT License](LICENSE), so your contributions
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (use the version in [`.nvmrc`](.nvmrc), currently v22)
+- [Node.js](https://nodejs.org/) 24 for local builds and tests
 - [VS Code](https://code.visualstudio.com/) (v1.105.0 or later)
 
 ### Setup
@@ -21,6 +21,17 @@ npm run build
 ```
 
 Then press **F5** in VS Code to launch the Extension Development Host.
+
+To run the standalone office from this checkout instead:
+
+```bash
+node dist/cli.js
+```
+
+This fork supports GitHub Copilot CLI only. `npx pixel-agents` uses the published
+package, not unpublished changes in your checkout. No provider setting is needed.
+Read [AGENTS.md](AGENTS.md) for contributor instructions and
+[CONTEXT.md](CONTEXT.md) for the canonical project vocabulary.
 
 ### Build and install the packaged extension locally
 
@@ -46,7 +57,7 @@ npm run test:package-contract
 npm run verify:npm-package
 ```
 
-The verifier runs the production `prepack` build, creates a tarball outside the repository, installs that exact tarball into a temporary project, and exercises CLI help, the health endpoint, the standalone SPA, bundled assets, and default Hook ON setup. Temporary files and the child server are removed automatically; it never publishes to npm.
+The verifier runs the production `prepack` build, creates a tarball outside the repository, installs that exact tarball into an isolated project, and exercises CLI help, the health endpoint, the standalone SPA, bundled assets, and consent-gated Copilot hook setup. Its files and child server are removed automatically; it never publishes to npm or invokes real AI requests.
 
 ### Maintainer release checklist
 
@@ -99,31 +110,44 @@ Vite will print a local URL (typically `http://localhost:5173`) where the mocked
 
 Pixel Agents uses a layered codebase. `core/` depends on nothing; `server/` and `webview-ui/` depend only on `core/`; `adapters/vscode/` depends on `core/` and `server/`.
 
-| Directory                   | Description                                                                                                                                                                                                                                           |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core/`                     | Protocol + interface definitions (AsyncAPI 3.0 contract, HookProvider, MessageTransport, StateAdapter). Zero runtime side effects.                                                                                                                    |
-| `server/`                   | Lifecycle runtime: `AgentRuntime`, `AgentStateStore`, `SessionRouter`, `DismissalTracker`, Fastify HTTP/WS server, file watching, transcript parsing, hook installer, providers, Vitest test suite. Also ships the `npx pixel-agents` standalone CLI. |
-| `adapters/vscode/`          | VS Code surface — `extension.ts`, `WebviewViewProvider`, terminal lifecycle, one-time state migration. Composes `core/` and `server/`.                                                                                                                |
-| `webview-ui/`               | React 19 + Canvas UI. Transport abstraction (`PostMessageTransport` + `WebSocketTransport`). Depends only on `core/`.                                                                                                                                 |
-| `webview-ui/public/assets/` | Bundled sprites, furniture catalog, default layout, fonts.                                                                                                                                                                                            |
-| `scripts/`                  | Build/CI tooling: `generate-messages.ts` (AsyncAPI → TS), `run-e2e.mjs`, `build-allure-report.mjs`, `assemble-vercel-output.mjs`, and the asset extraction pipeline.                                                                                  |
-| `e2e/`                      | Playwright suite — fixtures, helpers, specs for `claude/hooks-on/`, `claude/hooks-off/`, and `standalone/`.                                                                                                                                           |
-| `eslint-rules/`             | Custom rules (`no-inline-colors`, `pixel-shadow`, `pixel-font`) enforced project-wide.                                                                                                                                                                |
+- **`core/`**: AsyncAPI 3.0 protocol, provider, transport, and adapter contracts.
+  Zero runtime side effects.
+- **`server/`**: hooks-only `AgentRuntime`, `AgentStateStore`, Fastify HTTP/WS
+  server, persistence, Copilot provider and installer, standalone CLI, and Vitest
+  tests.
+- **`adapters/vscode/`**: VS Code terminals, webview bridge, and state migration.
+  Composes `core/` and `server/`.
+- **`webview-ui/`**: React 19 + Canvas office, layout editor, mobile shell, and
+  terminal panes. Depends only on `core/`.
+- **`webview-ui/public/assets/`**: bundled sprites, furniture catalog, default
+  layout, and fonts.
+- **`scripts/`**: protocol generation, build/CI, test reports, inventory generation,
+  and asset tooling.
+- **`e2e/`**: Playwright fixtures, mock Copilot process, VS Code specs, and headless
+  standalone browser specs.
+- **`eslint-rules/`**: custom pixel-style rules enforced project-wide.
 
 The repo uses **npm workspaces** (`server`, `webview-ui` declared in the root `package.json`). A single `npm install` at the root installs dependencies for all workspaces; no nested `cd ... && npm install` is needed.
 
-## Manual Hook Testing
+## Copilot Hook Integration
 
-The repo includes [server/manual-hook-events.http](server/manual-hook-events.http) for manually driving the local hook server while the extension is running.
+The runtime normalizes and dispatches Copilot CLI hooks directly into the shared
+state store. There is no transcript scanning or heuristic fallback. Copilot child
+agents, teams, and context usage are not tracked; generic protocol/UI support for
+those concepts remains dormant.
 
-It covers the basic external-session lifecycle:
+Installation requires consent and creates the dedicated
+`~/.copilot/hooks/pixel-agents.json` file (`COPILOT_HOME` is honored) and the bridge
+`~/.pixel-agents/hooks/copilot-hook.js`. Existing hook files must be preserved.
+The bridge needs `node` on the CLI's `PATH`.
 
-- `SessionStart` to stage a pending external session
-- `PreToolUse` to confirm it and mark the agent active
-- `PermissionRequest`, `Notification`, and `Stop` to drive permission/waiting states
-- `SessionEnd` to despawn the agent
+Office launches set `PIXEL_AGENTS_COPILOT=1` automatically. External CLI processes
+must opt in with that environment variable, and other workspaces require **Watch
+All Sessions**. Native Copilot Chat is not integrated. Hooks do not transmit real
+prompt text, intercept API keys, or auto-approve tools.
 
-Before using it, copy `port` and `token` from `~/.pixel-agents/server.json` into the file variables and set `cwd` to a workspace folder opened in the Extension Development Host. If `cwd` is outside the current workspace, enable **Watch All Sessions** in Pixel Agents first.
+For automated validation, use fixture-owned hooks and the mock Copilot process.
+Never make real AI requests or change personal settings, hook files, or sessions.
 
 ## Code Guidelines
 
@@ -131,7 +155,7 @@ Before using it, copy `port` and `token` from `~/.pixel-agents/server.json` into
 
 **No unused locals or parameters** (`noUnusedLocals` and `noUnusedParameters` are enabled). All magic numbers and strings are centralized — don't add inline constants to source files:
 
-- **Shared backend timing/scanning constants:** `server/src/constants.ts` (imported by `adapters/vscode/` too)
+- **Shared backend constants:** `server/src/constants.ts` (imported by `adapters/vscode/` too)
 - **VS Code-only IDs / command names:** `adapters/vscode/constants.ts`
 - **Protocol-level constants:** `core/src/constants.ts`
 - **Webview:** `webview-ui/src/constants.ts` (grid, animation, rendering, camera, zoom, editor, canvas overlay rgba strings)
@@ -169,13 +193,23 @@ npm run test:server
 npm run test:webview
 ```
 
-Server tests cover `AgentStateStore` (typed mutations + events), `HookEventHandler` (routing, buffering, team gating), `SessionRouter` and `DismissalTracker`, `FileStateAdapter` (namespaced persistence), `migrateVsCodeState` (verify-before-clear), `teamUtils`, the Claude provider and its team extension, the hook installer, the HTTP server (lifecycle, auth, `/ws`, broadcast), and the hook script via a spawned-process integration test.
+Server tests cover hook-driven lifecycle and activity, typed state mutations,
+namespaced persistence, consent and hook-file ownership, the Copilot provider and
+bridge, HTTP/WebSocket authorization, standalone launches, and VS Code adapter
+behavior. Webview tests cover pure office, editor, gesture, selection, clipboard,
+viewport, and card-order behavior.
 
-`claude-hook.test.ts` requires the bundled hook at `dist/hooks/claude-hook.js`, so build before running it (or use `npm test` which builds first).
+Spawned bridge tests need `dist/hooks/copilot-hook.js`; run `npm run build` first
+when validating hook bundle changes. `npm test` runs tests but does not build.
 
 ## End-to-End Tests
 
-The `e2e/` directory contains Playwright tests that launch a real VS Code instance with the extension loaded in development mode.
+The `e2e/` directory contains Playwright tests against a standalone browser office
+and a real VS Code Electron instance with the development extension.
+
+**Get explicit approval before running VS Code Electron tests locally.** They open
+real windows and steal keyboard focus. Never run them from a subagent. Use
+headless standalone specs for unattended validation.
 
 ### Running e2e tests locally
 
@@ -183,8 +217,11 @@ The `e2e/` directory contains Playwright tests that launch a real VS Code instan
 # Build the extension first (tests load the compiled output)
 npm run build
 
-# Runs the e2e tests
-npm run e2e
+# Headless standalone browser tests (no real editor windows)
+npm run e2e -- e2e/tests/standalone --workers=1
+
+# Full suite: run only after explicit approval for VS Code Electron windows
+npm run e2e -- --workers=1
 
 # Step-by-step debug mode
 npm run e2e:debug
@@ -210,34 +247,29 @@ All test artifacts are written to `test-results/e2e/`:
 
 By default, successful tests discard their videos after teardown. Pass `--attach-videos-on-success` when you need success-case recordings attached to the report for debugging.
 
-### Mock claude
+### Mock Copilot
 
-Tests never invoke the real `claude` CLI. A wrapper script (`e2e/fixtures/mock-claude` on POSIX, `mock-claude.cmd` on Windows) is copied into an isolated `bin/` directory and prepended to `PATH` before VS Code starts. The wrapper delegates to `e2e/fixtures/mock-claude-runner.cjs`, which honors a scenario blob set by the test via the `MOCK_CLAUDE_SCENARIO` env var.
-
-Tests build scenarios with the fluent `claudeScenario(...)` helper in `e2e/helpers/mock-claude.ts`:
-
-```typescript
-claudeScenario('my-scenario')
-  .at(2_000)
-  .appendJsonl(buildAssistantToolUseRecord('toolu-1', 'Read', { file_path: '/x' }))
-  .at(3_000)
-  .emitHook(preToolUseRead('sessionId', '/x'))
-  .holdOpenFor(10_000)
-  .build();
-```
-
-`appendJsonl` writes a record to `$HOME/.claude/projects/<project-hash>/<session-id>.jsonl` at the given offset. `emitHook` POSTs a hook event to the running server's `/api/hooks/:providerId`. `holdOpenFor` keeps the wrapper process alive (and the terminal "busy") for that many ms after the last action, then exits.
+Tests never invoke the real Copilot CLI or make AI requests. The mock Copilot
+wrapper runs in an isolated `bin/` directory on the fixture's `PATH`. Its scenario
+runner simulates lifecycle, tool, permission, and waiting events by executing the
+installed `COPILOT_HOME/hooks/pixel-agents.json` entries with documented camelCase
+payloads. This exercises the real bridge and hook ingress instead of bypassing
+them with UI state injection. No transcript files are involved.
 
 Each test runs with an isolated `HOME`, workspace directory, VS Code `--user-data-dir`, and mock log file — no state leaks between runs or into your real VS Code profile.
 
-For the normative model behind this (the process-boundary principle, append-only transcript rule, assertion philosophy, and the one standalone-server exception), see [`e2e/README.md` → "Mocking model & rules"](e2e/README.md#mocking-model--rules).
+For the normative process-boundary model, installed-hook rules, visible-outcome
+assertions, and standalone-server exception, read
+[`e2e/README.md` → "Mocking model & rules"](e2e/README.md#mocking-model--rules)
+before authoring tests.
 
 ### E2E test naming
 
-Tests use behavioral sentences with `@area:<tag>` suffixes for grouping. Areas: `spawn`, `lifecycle`, `cross-cutting`, `teams`, `matrix`, `standalone`. Example:
+Tests use behavioral sentences with `@area:<tag>` tags for grouping. Use the
+current inventory in `e2e/README.md` for supported areas. Example:
 
 ```typescript
-test('rapid /clear then new tool within 500ms lands on the reassigned agent @area:lifecycle', ...);
+test('a launched agent becomes active when its tool starts', { tag: '@area:standalone' }, ...);
 ```
 
 The auto-generated test inventory in `e2e/README.md` groups tests by `@area:` tag. After adding or removing tests, run `npm run e2e:inventory` to regenerate — CI fails if it drifts.
@@ -255,9 +287,12 @@ The auto-generated test inventory in `e2e/README.md` groups tests by `@area:` ta
    npm run e2e:inventory                # Regen e2e/README.md (must produce no git diff)
    npm run build                        # esbuild (extension + CLI + hooks) + Vite (webview)
    npm test                             # Server vitest + webview vitest
-   npm run e2e                          # Full Playwright suite; inventory lives in e2e/README.md
+   npm run e2e -- e2e/tests/standalone --workers=1 # Headless browser specs
    ```
-   CI runs these same checks automatically on every PR. The AsyncAPI and e2e inventory drift checks fail the build on any diff — always regen + commit the result.
+   Run the full `npm run e2e -- --workers=1` suite locally only with explicit
+   approval for VS Code Electron windows. CI runs the full checks automatically.
+   The AsyncAPI and e2e inventory drift checks fail on generated differences —
+   regenerate and commit results when changing their sources.
 4. Open a pull request against `main` with:
    - A **conventional commit PR title** (e.g. `feat: add zoom controls`, `fix: character freezing on terminal close`, `refactor: extract pathfinding module`). CI enforces this format — see [Conventional Commits](https://www.conventionalcommits.org/).
    - A clear description of what changed and why

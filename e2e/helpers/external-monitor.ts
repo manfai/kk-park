@@ -1,10 +1,10 @@
 import path from 'path';
 
 /**
- * External mock-claude sessions are detached processes Pixel Agents ADOPTS
+ * External mock-copilot sessions are detached processes Pixel Agents ADOPTS
  * (never launches), so unlike internal agents they have no terminal of their
  * own. Their stdout (magenta `[external·tag]` narration) is appended to a
- * per-test log by spawnExternalClaudeScenario (see helpers/mock-claude.ts).
+ * per-test log by spawnExternalCopilotScenario (see helpers/mock-copilot.ts).
  *
  * That log is surfaced by the always-on "e2e monitor" terminal the fixture
  * opens (see helpers/test-narration.ts → openMonitorTerminal), which tails both
@@ -13,5 +13,5 @@ import path from 'path';
  * path both sides agree on.
  */
 export function getExternalNarrationLogPath(tmpHome: string): string {
-  return path.join(tmpHome, '.claude-mock', 'external-narration.log');
+  return path.join(tmpHome, '.copilot-mock', 'external-narration.log');
 }

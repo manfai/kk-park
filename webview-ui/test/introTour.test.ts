@@ -2,7 +2,7 @@
  * Unit tests for the Intro tour's wire-facing state machine
  * (src/hooks/introTourState.ts) — the pure reducer useIntroTour drives.
  *
- * WHY THIS IS A UNIT TEST, given "E2E over webview unit tests" (CLAUDE.md):
+ * WHY THIS IS A UNIT TEST, given the project's E2E-first policy:
  * like greeter.test.ts, this covers DOMAIN invariants e2e can barely observe:
  * which asks survive being mooted, when a hooksStatus arrival is this tour's
  * install verdict and when it is noise, and what a revised choice resets.
@@ -21,7 +21,7 @@ import { INTRO_TOUR_IDLE, reduceIntroTour } from '../src/hooks/introTourState.js
 
 const REQUEST = {
   type: 'hooksConsentRequest',
-  providerId: 'claude',
+  providerId: 'copilot',
   headline: 'One more thing: hooks!',
   disclosure: 'What is written.\n\nWhat moves.\n\nHow to undo.',
 } as const;
@@ -62,7 +62,7 @@ test('a status arriving with no wait armed is noise, not a verdict', () => {
   const opened = play({ kind: 'requestChanged', request: REQUEST });
   const after = reduceIntroTour(opened, {
     kind: 'statusArrived',
-    providerId: 'claude',
+    providerId: 'copilot',
     installed: false,
   });
   assert.equal(after, opened, 'no-op events return the same state reference');
@@ -74,7 +74,7 @@ test('a failed install is detected by ARRIVAL, not by the value changing', () =>
   const state = play(
     { kind: 'requestChanged', request: REQUEST },
     { kind: 'choiceSent', choice: 'install' },
-    { kind: 'statusArrived', providerId: 'claude', installed: false },
+    { kind: 'statusArrived', providerId: 'copilot', installed: false },
   );
   assert.equal(state.installFailed, true);
 });
@@ -83,7 +83,7 @@ test('a landed install reports no failure', () => {
   const state = play(
     { kind: 'requestChanged', request: REQUEST },
     { kind: 'choiceSent', choice: 'install' },
-    { kind: 'statusArrived', providerId: 'claude', installed: true },
+    { kind: 'statusArrived', providerId: 'copilot', installed: true },
   );
   assert.equal(state.installFailed, false);
 });
@@ -95,7 +95,7 @@ test('declines never arm the verdict wait', () => {
     const state = play(
       { kind: 'requestChanged', request: REQUEST },
       { kind: 'choiceSent', choice },
-      { kind: 'statusArrived', providerId: 'claude', installed: false },
+      { kind: 'statusArrived', providerId: 'copilot', installed: false },
     );
     assert.equal(state.installFailed, false, `${choice} must not read a status as a verdict`);
   }
@@ -116,7 +116,7 @@ test('the pending window is exactly install-click to verdict-arrival', () => {
 
   const settled = reduceIntroTour(armed, {
     kind: 'statusArrived',
-    providerId: 'claude',
+    providerId: 'copilot',
     installed: false,
   });
   assert.equal(settled.awaitingOutcome, false, 'the verdict closes the window');
@@ -137,7 +137,7 @@ test('a Back-and-revised choice clears the earlier verdict', () => {
   const state = play(
     { kind: 'requestChanged', request: REQUEST },
     { kind: 'choiceSent', choice: 'install' },
-    { kind: 'statusArrived', providerId: 'claude', installed: false },
+    { kind: 'statusArrived', providerId: 'copilot', installed: false },
     { kind: 'choiceSent', choice: 'notNow' },
   );
   assert.equal(state.installFailed, false);
@@ -150,8 +150,8 @@ test('the verdict settles on the FIRST arrival after the click', () => {
   const state = play(
     { kind: 'requestChanged', request: REQUEST },
     { kind: 'choiceSent', choice: 'install' },
-    { kind: 'statusArrived', providerId: 'claude', installed: false },
-    { kind: 'statusArrived', providerId: 'claude', installed: true },
+    { kind: 'statusArrived', providerId: 'copilot', installed: false },
+    { kind: 'statusArrived', providerId: 'copilot', installed: true },
   );
   assert.equal(state.installFailed, true);
 });
@@ -160,7 +160,7 @@ test('closing resets everything, so the next request starts a fresh tour', () =>
   const state = play(
     { kind: 'requestChanged', request: REQUEST },
     { kind: 'choiceSent', choice: 'install' },
-    { kind: 'statusArrived', providerId: 'claude', installed: false },
+    { kind: 'statusArrived', providerId: 'copilot', installed: false },
     { kind: 'closed' },
   );
   assert.deepEqual(state, INTRO_TOUR_IDLE);
@@ -171,19 +171,19 @@ test('closing resets everything, so the next request starts a fresh tour', () =>
 });
 
 test("another provider's status is noise, never this tour's verdict", () => {
-  // The tour asked about claude; a copilot install failing (or landing) in
+  // The tour asked about Copilot; a future provider's install failing in
   // parallel says nothing about THIS install. Without the provider check, the
   // first arrival of any status would settle a verdict about the wrong write.
   const state = play(
     { kind: 'requestChanged', request: REQUEST },
     { kind: 'choiceSent', choice: 'install' },
-    { kind: 'statusArrived', providerId: 'copilot', installed: false },
+    { kind: 'statusArrived', providerId: 'other-provider', installed: false },
   );
   assert.equal(state.installFailed, false, 'the wait stays armed');
 
   const settled = reduceIntroTour(state, {
     kind: 'statusArrived',
-    providerId: 'claude',
+    providerId: 'copilot',
     installed: true,
   });
   assert.equal(settled.installFailed, false, "this tour's own status settles it");
@@ -193,7 +193,7 @@ test("a different provider's request replaces an UNANSWERED tour as a fresh one"
   // Nothing of the first provider's tour may leak into the second: an
   // inherited armed wait would read the new provider's first status as a
   // verdict on an install that tour never sent.
-  const OTHER = { ...REQUEST, providerId: 'copilot' } as const;
+  const OTHER = { ...REQUEST, providerId: 'other-provider' } as const;
   const state = play(
     { kind: 'requestChanged', request: REQUEST },
     { kind: 'requestChanged', request: OTHER },
@@ -208,7 +208,7 @@ test("an ANSWERED tour holds its snapshot against a different provider's request
   // The closing step (and its verdict) belongs to the person who just
   // answered; the queued ask is re-delivered by the driver once this tour
   // closes, not by yanking the closing step.
-  const OTHER = { ...REQUEST, providerId: 'copilot' } as const;
+  const OTHER = { ...REQUEST, providerId: 'other-provider' } as const;
   const state = play(
     { kind: 'requestChanged', request: REQUEST },
     { kind: 'choiceSent', choice: 'install' },

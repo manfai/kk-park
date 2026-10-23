@@ -97,6 +97,23 @@ export function updateCharacter(
   tileMap: TileTypeVal[][],
   blockedTiles: Set<string>,
 ): void {
+  if (ch.isArchived) {
+    ch.isActive = false;
+    ch.currentTool = null;
+    ch.bubbleType = null;
+    ch.seatTimer = 0;
+    if (ch.path.length === 0) {
+      ch.state = CharacterState.IDLE;
+      ch.frame = 0;
+      ch.dir = Direction.DOWN;
+      if (ch.archivePosition) {
+        ch.x = ch.archivePosition.x;
+        ch.y = ch.archivePosition.y;
+      }
+      return;
+    }
+    ch.state = CharacterState.WALK;
+  }
   ch.frameTimer += dt;
 
   switch (ch.state) {

@@ -22,7 +22,7 @@ interface MobileKeyBarProps {
  * Accessory key row shown above the software keyboard in terminal view. The
  * iOS form-assistant bar (prev/next arrows + Done) is WebKit chrome that web
  * content cannot alter or remove, so this row sits directly above it and
- * supplies the keys a Claude Code TUI actually needs — slash menu, shift+tab
+ * supplies terminal accessory keys — slash, shift+tab
  * mode cycle, esc interrupt, an arrow trackpad, line break — none of which
  * exist on the iOS keyboard.
  */

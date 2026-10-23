@@ -174,8 +174,8 @@
     background: var(--color-accent-bright);
   }
 
-  /* Terminal content must be monospace: Claude Code is a full-screen TUI, and a
-     proportional face breaks its column alignment. The base layer's
+  /* Terminal content must be monospace: a proportional face breaks the column
+     alignment of full-screen terminal applications. The base layer's
      `* { font-pixel }` applies FS Pixel Sans to every element -- including the
      span xterm renders each cell into -- which overrides what xterm sets on its
      own container. Re-assert the mono stack here (components layer beats base,
@@ -197,7 +197,7 @@
 
   /* xterm's viewport owns the terminal's native scrollbar. Same pixel
      treatment as .pixel-scrollbar below, but with a transparent track: when
-     nothing overflows (a full-screen TUI like Claude Code) no strip paints at
+     nothing overflows (a full-screen TUI) no strip paints at
      all, and with scrollback only the slim square thumb shows. */
   .xterm .xterm-viewport::-webkit-scrollbar {
     width: 6px;
@@ -222,7 +222,7 @@
      creates and positions these, and sets --cell-h, --sel-handle-w and
      --sel-knob on each handle from constants.ts, so the geometry it computes
      and the shapes drawn here can't drift. */
-  /* The pill is a row of buttons: Copy (verbatim) and Copy as text. */
+  /* The pill contains a verbatim Copy button. */
   .terminal-copy-pill {
     position: absolute;
     z-index: 10;

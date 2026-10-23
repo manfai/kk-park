@@ -37,6 +37,7 @@ export interface SeedLayoutOptions {
   areaTiles?: SeedAreaTile[];
   /** Sparse carpet tiles; expanded to a full parallel array (default colors). */
   carpetTiles?: SeedCarpetTile[];
+  furniture?: Array<{ uid: string; type: string; col: number; row: number }>;
 }
 
 /**
@@ -55,7 +56,7 @@ export function buildSeedLayout(opts: SeedLayoutOptions = {}): Record<string, un
     cols,
     rows,
     tiles,
-    furniture: [],
+    furniture: opts.furniture ?? [],
     layoutRevision: SEED_LAYOUT_REVISION,
   };
 
@@ -122,6 +123,6 @@ export function buildSeedConfig(opts: SeedConfigOptions = {}): Record<string, un
     externalAssetDirectories: [],
     // Same baseline as the launch-level seed: skip the first-run consent prompt
     // so hook installation proceeds at startup (see e2e/helpers/launch.ts).
-    hooksConsent: { claude: 'granted' },
+    hooksConsent: { copilot: 'granted' },
   };
 }

@@ -10,6 +10,7 @@ import { DirectoryModal } from './components/DirectoryModal.js';
 import { EditActionBar } from './components/EditActionBar.js';
 import { IntroBubble } from './components/IntroBubble.js';
 import { MigrationNotice } from './components/MigrationNotice.js';
+import { SessionsModal } from './components/SessionsModal.js';
 import { SettingsModal } from './components/SettingsModal.js';
 import { TerminalDrawer } from './components/TerminalDrawer.js';
 import { Tooltip } from './components/Tooltip.js';
@@ -17,11 +18,10 @@ import { Button } from './components/ui/Button.js';
 import { Modal } from './components/ui/Modal.js';
 import { VersionIndicator } from './components/VersionIndicator.js';
 import { ZoomControls } from './components/ZoomControls.js';
-import { OFFICE_CANVAS_TEST_ID } from './constants.js';
+import { ARCHIVE_CONFIRMATION_Z_INDEX, OFFICE_CANVAS_TEST_ID } from './constants.js';
 import { useDirectoryEditor } from './hooks/useDirectoryEditor.js';
 import { useEditorActions } from './hooks/useEditorActions.js';
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js';
-import type { Directory } from './hooks/useExtensionMessages.js';
 import { useExtensionMessages } from './hooks/useExtensionMessages.js';
 import { useIntroTour } from './hooks/useIntroTour.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
@@ -80,6 +80,10 @@ function App() {
   );
 
   const {
+    sessions,
+    sessionRejection,
+    sessionOpened,
+    agentCharacterNames,
     agents,
     selectedAgent,
     agentTools,
@@ -106,6 +110,7 @@ function App() {
     setGhostHeadlessAgents,
     hooksEnabled,
     hooksInstalled,
+    providerId,
     hooksStatusSeq,
     hooksInfoShown,
     consentRequest,
@@ -134,6 +139,52 @@ function App() {
   const [hooksTooltipDismissed, setHooksTooltipDismissed] = useState(false);
   const [isDebugMode, setIsDebugMode] = useState(false);
   const [alwaysShowOverlay, setAlwaysShowOverlay] = useState(false);
+  const [isSessionsOpen, setIsSessionsOpen] = useState(false);
+  const [archiveRequest, setArchiveRequest] = useState<number | null>(null);
+  const [archivePending, setArchivePending] = useState(false);
+  const [archiveSpaceUnavailable, setArchiveSpaceUnavailable] = useState(false);
+  const [archiveErrorSeq, setArchiveErrorSeq] = useState(0);
+  const [displayedSessionError, setDisplayedSessionError] = useState(0);
+  const handledSessionOpenSeq = useRef(0);
+  const closeSessions = useCallback(() => setIsSessionsOpen(false), []);
+  const manageSessions = useCallback(() => {
+    setDisplayedSessionError(0);
+    setIsSessionsOpen(true);
+  }, []);
+  useEffect(() => {
+    if (!sessionRejection || officeReadOnly) return;
+    setDisplayedSessionError(sessionRejection.seq);
+    setIsSessionsOpen(true);
+  }, [sessionRejection, officeReadOnly]);
+  useEffect(() => {
+    if (officeReadOnly) setIsSessionsOpen(false);
+  }, [officeReadOnly]);
+  useEffect(() => {
+    if (archiveRequest === null) return;
+    if (
+      officeReadOnly ||
+      sessions?.some((session) => session.id === archiveRequest && session.archived)
+    ) {
+      setArchiveRequest(null);
+      setArchivePending(false);
+    } else if (
+      sessionRejection &&
+      sessionRejection.seq > archiveErrorSeq &&
+      (sessionRejection.id === undefined || sessionRejection.id === archiveRequest)
+    ) {
+      setArchivePending(false);
+    }
+  }, [archiveRequest, archiveErrorSeq, officeReadOnly, sessions, sessionRejection]);
+  useEffect(() => {
+    if (archiveRequest === null) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopImmediatePropagation();
+      if (!archivePending) setArchiveRequest(null);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [archiveRequest, archivePending]);
 
   // Mobile shell (phones, touch tablets): office and terminal as sliding
   // full-screen pages with the cards in a bottom bar. Desktop keeps the
@@ -161,18 +212,45 @@ function App() {
     agentStatuses,
     agentAwaitingInput,
     agentSeenActivity,
+    agentCharacterNames,
   });
 
-  const launchIntoDirectory = useCallback((directory: Directory) => {
-    transport.send({ type: 'launchAgent', directoryPath: directory.path });
-  }, []);
+  const { reveal: revealSessionTerminal } = terminalDrawer;
+  const openSession = useCallback(
+    (id: number) => {
+      if (officeReadOnly) return;
+      setDisplayedSessionError(0);
+      transport.send({ type: 'openSession', id });
+    },
+    [officeReadOnly],
+  );
   const mobileShell = useMobileShell({
     getOfficeState,
-    terminalAgentIds,
     drawer: terminalDrawer,
     focusedAgentId,
-    launchAgent: launchIntoDirectory,
+    openSession,
   });
+  const { showTerminal: revealMobileSession } = mobileShell;
+  useEffect(() => {
+    if (!sessionOpened) {
+      handledSessionOpenSeq.current = 0;
+      return;
+    }
+    if (sessionOpened.seq === handledSessionOpenSeq.current || officeReadOnly) return;
+    if (terminalAvailable && !terminalAgentIds.includes(sessionOpened.id)) return;
+    handledSessionOpenSeq.current = sessionOpened.seq;
+    revealSessionTerminal(sessionOpened.id);
+    setIsSessionsOpen(false);
+    if (isMobile && terminalAvailable) revealMobileSession();
+  }, [
+    sessionOpened,
+    terminalAgentIds,
+    terminalAvailable,
+    isMobile,
+    officeReadOnly,
+    revealMobileSession,
+    revealSessionTerminal,
+  ]);
 
   const currentMajorMinor = toMajorMinor(extensionVersion);
 
@@ -216,9 +294,12 @@ function App() {
     transport.send({ type: 'setGhostHeadlessAgents', enabled: next });
   }, [ghostHeadlessAgents, setGhostHeadlessAgents]);
 
-  const handleSelectAgent = useCallback((id: number) => {
-    transport.send({ type: 'focusAgent', id });
-  }, []);
+  const handleSelectAgent = useCallback(
+    (id: number) => {
+      openSession(id);
+    },
+    [openSession],
+  );
 
   // The Intro's wire-facing state machine — which asks survive being mooted,
   // when a hooksStatus is this tour's install verdict — lives in useIntroTour
@@ -232,8 +313,8 @@ function App() {
   } = useIntroTour({ consentRequest, hooksInstalled, hooksStatusSeq, dismissConsentRequest });
 
   // The Settings surface renders one provider today; its checkbox binds to
-  // the Claude row of the per-provider install-state map.
-  const claudeHooksInstalled = hooksInstalled['claude'] === true;
+  // the selected provider's row of the install-state map.
+  const activeHooksInstalled = hooksInstalled[providerId] === true;
 
   // Mutate Directory→Area mappings locally + send to server. Updates OfficeState in
   // the same tick so a follow-up agentCreated picks up the new mapping.
@@ -317,7 +398,7 @@ function App() {
 
   const [editorTickForKeyboard, setEditorTickForKeyboard] = useState(0);
   useEditorKeyboard(
-    editor.isEditMode,
+    editor.isEditMode && !isSessionsOpen && archiveRequest === null,
     editorState,
     editor.handleDeleteSelected,
     editor.handleRotateSelected,
@@ -328,44 +409,45 @@ function App() {
     editor.handleToggleEditMode,
   );
 
-  const handleCloseAgent = useCallback((id: number) => {
-    transport.send({ type: 'closeAgent', id });
-  }, []);
+  const handleCloseAgent = useCallback(
+    (id: number) => {
+      if (officeReadOnly || getOfficeState().characters.get(id)?.isArchived) return;
+      setArchiveErrorSeq(sessionRejection?.seq ?? 0);
+      setArchivePending(false);
+      setArchiveSpaceUnavailable(false);
+      setArchiveRequest(id);
+    },
+    [officeReadOnly, sessionRejection],
+  );
+  const archiveCanPark =
+    !archiveSpaceUnavailable &&
+    archiveRequest !== null &&
+    getOfficeState().archivePath(archiveRequest) !== null;
 
-  const { reveal: revealTerminal } = terminalDrawer;
-  const { showTerminal: showMobileTerminal } = mobileShell;
   const handleClick = useCallback(
     (agentId: number) => {
       // If clicked agent is a sub-agent, focus the parent's terminal instead
       const os = getOfficeState();
       const focusId = os.terminalOwnerOf(agentId);
-      transport.send({ type: 'focusAgent', id: focusId });
-      // Standalone: focusAgent is a no-op server-side (there's no editor to
-      // raise a panel in), so focus is resolved here — reveal the agent's tab
-      // (desktop drawer) and slide to the terminal page (mobile). A Teammate
-      // without a terminal of its own runs in its Lead's, so it reveals that
-      // one (VS Code resolves the same way server-side).
-      const leadId = os.characters.get(focusId)?.leadAgentId;
-      const terminalId =
-        leadId !== undefined && !terminalAgentIds.includes(focusId) ? leadId : focusId;
-      if (terminalAgentIds.includes(terminalId)) {
-        revealTerminal(terminalId);
-        if (isMobile) showMobileTerminal();
-      }
+      openSession(focusId);
     },
-    [terminalAgentIds, isMobile, revealTerminal, showMobileTerminal],
+    [openSession],
   );
 
   // Card click when there is no terminal pane to switch (VS Code, or a
   // watch-only standalone session): ask the host to raise the agent's own
   // terminal — VS Code shows the editor terminal, standalone has nothing to
   // show — and select its character so the office follows the click.
-  const handleCardSelect = useCallback((agentId: number) => {
-    transport.send({ type: 'focusAgent', id: agentId });
-    getOfficeState().selectAndFollow(agentId);
-  }, []);
+  const handleCardSelect = useCallback(
+    (agentId: number) => {
+      openSession(agentId);
+      getOfficeState().selectAndFollow(agentId);
+    },
+    [openSession],
+  );
 
   const officeState = getOfficeState();
+  const cardAgentIds = agents.filter((id) => !officeState.characters.get(id)?.isArchived);
 
   // Merged set of Directories the Areas dropdown can map: host-contributed ones plus
   // every distinct Directory an agent has run in this session (deduped by name; name
@@ -571,6 +653,8 @@ function App() {
           <ToolOverlay
             officeState={officeState}
             agents={agents}
+            agentCharacterNames={agentCharacterNames}
+            readOnly={officeReadOnly}
             agentTools={agentTools}
             subagentTools={subagentTools}
             subagentCharacters={subagentCharacters}
@@ -597,7 +681,7 @@ function App() {
           message), NOT the hooksEnabled preference: hooksEnabled defaults true
           while first-run consent is still pending, and announcing "Instant
           Detection Active" before anything is installed would be a lie. */}
-      {hooksEnabled && claudeHooksInstalled && !hooksInfoShown && !hooksTooltipDismissed && (
+      {hooksEnabled && activeHooksInstalled && !hooksInfoShown && !hooksTooltipDismissed && (
         <Tooltip
           title="Instant Detection Active"
           position="top-right"
@@ -636,11 +720,7 @@ function App() {
           onToggleEditMode={editor.handleToggleEditMode}
           isSettingsOpen={isSettingsOpen}
           onToggleSettings={() => setIsSettingsOpen((v) => !v)}
-          directories={directories}
-          onAddDirectory={directoryEditor.add}
-          onEditDirectory={directoryEditor.edit}
-          terminalAvailable={terminalAvailable}
-          terminalUnavailableReason={terminalUnavailableReason}
+          onManageSessions={manageSessions}
         />
       )}
 
@@ -681,8 +761,10 @@ function App() {
           onClose={handleIntroClose}
           escapeSuppressed={
             isSettingsOpen ||
+            archiveRequest !== null ||
             isChangelogOpen ||
             isHooksInfoOpen ||
+            isSessionsOpen ||
             showMigrationNotice ||
             editor.isEditMode
           }
@@ -708,14 +790,12 @@ function App() {
           office={officeRegion}
           shell={mobileShell}
           drawer={terminalDrawer}
-          agentIds={agents}
+          agentIds={cardAgentIds}
           terminalAgentIds={terminalAgentIds}
           focusedAgentId={focusedAgentId}
           terminalAvailable={terminalAvailable}
-          terminalUnavailableReason={terminalUnavailableReason}
-          directories={directories}
-          onAddDirectory={directoryEditor.add}
-          onEditDirectory={directoryEditor.edit}
+          onManageSessions={manageSessions}
+          readOnly={officeReadOnly}
           onCloseAgent={handleCloseAgent}
           keyboardOpen={keyboard.keyboardOpen}
         />
@@ -735,8 +815,9 @@ function App() {
           {terminalAvailable ? (
             <TerminalDrawer
               agentIds={terminalAgentIds}
+              cardAgentIds={cardAgentIds}
               shownAgentId={terminalDrawer.shownAgentId}
-              onSelectAgent={terminalDrawer.select}
+              onSelectAgent={handleCardSelect}
               onCloseAgent={handleCloseAgent}
               isOpen={terminalDrawer.isOpen}
               onClosePanel={terminalDrawer.close}
@@ -749,12 +830,13 @@ function App() {
           ) : (
             !isDebugMode && (
               <AgentCardBar
-                agentIds={agents}
+                agentIds={cardAgentIds}
                 focusedAgentId={focusedAgentId}
                 getAppearance={terminalDrawer.getAppearance}
                 statusFor={terminalDrawer.statusFor}
                 onSelect={handleCardSelect}
                 onClose={handleCloseAgent}
+                readOnly={officeReadOnly}
               />
             )
           )}
@@ -779,8 +861,9 @@ function App() {
             <li className="text-sm mb-2">Sound notifications play immediately</li>
           </ul>
           <p className="mb-12 text-text-muted">
-            This works through Claude Code Hooks, small event listeners that notify Pixel Agents
-            whenever something happens in your Claude sessions.
+            Copilot CLI hooks notify Pixel Agents about enrolled CLI sessions. Office launches
+            enroll automatically; external launches need PIXEL_AGENTS_COPILOT=1. Native Copilot Chat
+            is not tracked, and disabling hooks disables live activity tracking.
           </p>
           <div className="text-center">
             <button
@@ -795,9 +878,83 @@ function App() {
           </p>
         </div>
       </Modal>
-      {/* Rendered at the composition root, not inside a launch surface: the
-          drawer that opens it lives in BottomToolbar on desktop and
-          MobileAgentBar on mobile, and both close as soon as it appears. */}
+      {/* Keep both managers outside the mobile shell's transformed track. */}
+      {!officeReadOnly && (
+        <SessionsModal
+          isOpen={isSessionsOpen && !directoryEditor.modal.open}
+          sessions={sessions}
+          rejection={sessionRejection?.seq === displayedSessionError ? sessionRejection : null}
+          directories={directories}
+          canLaunch={!isBrowserRuntime || terminalAvailable}
+          unavailableReason={terminalUnavailableReason}
+          onClose={closeSessions}
+          onOpen={openSession}
+          onArchive={handleCloseAgent}
+          onAddDirectory={directoryEditor.add}
+          onEditDirectory={directoryEditor.edit}
+        />
+      )}
+      <Modal
+        isOpen={archiveRequest !== null && !officeReadOnly}
+        onClose={() => {
+          if (!archivePending) setArchiveRequest(null);
+        }}
+        title="Archive character?"
+        zIndex={ARCHIVE_CONFIRMATION_Z_INDEX}
+      >
+        <section
+          data-testid="archive-confirmation"
+          role="alertdialog"
+          aria-modal="true"
+          aria-label="Archive character?"
+          className="px-10 py-6 max-w-md"
+        >
+          <p>
+            Archive{' '}
+            {archiveRequest !== null
+              ? (agentCharacterNames[archiveRequest] ?? 'this character')
+              : 'this character'}
+            ?
+          </p>
+          <p>
+            The character will be confined inside the nearest reachable empty Jail Cage, one
+            character per cage. Its managed Copilot CLI will stop. The name and conversation history
+            are kept; external terminals are not stopped.
+          </p>
+          {!archiveCanPark && (
+            <p role="alert" className="text-status-error">
+              No reachable free Jail Cage. Place an empty Jail Cage in Layout → Furniture → Decor
+              before archiving.
+            </p>
+          )}
+          {sessionRejection &&
+            sessionRejection.seq > archiveErrorSeq &&
+            (sessionRejection.id === undefined || sessionRejection.id === archiveRequest) && (
+              <p role="alert" className="text-status-error">
+                {sessionRejection.reason}
+              </p>
+            )}
+          <div className="flex gap-6">
+            <Button autoFocus disabled={archivePending} onClick={() => setArchiveRequest(null)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={archivePending || !archiveCanPark}
+              onClick={() => {
+                if (archiveRequest === null || !archiveCanPark || officeReadOnly) return;
+                if (getOfficeState().archivePath(archiveRequest) === null) {
+                  setArchiveSpaceUnavailable(true);
+                  return;
+                }
+                setArchivePending(true);
+                transport.send({ type: 'setSessionArchived', id: archiveRequest, archived: true });
+              }}
+            >
+              {archivePending ? 'Archiving…' : 'Archive character'}
+            </Button>
+          </div>
+        </section>
+      </Modal>
       <DirectoryModal
         isOpen={directoryEditor.modal.open}
         editing={directoryEditor.modal.editing}
@@ -832,7 +989,7 @@ function App() {
           setWatchAllSessions(newVal);
           transport.send({ type: 'setWatchAllSessions', enabled: newVal });
         }}
-        hooksInstalled={claudeHooksInstalled}
+        hooksInstalled={activeHooksInstalled}
         onToggleHooksEnabled={() => {
           // Toggle the DISPLAYED state (actual install), not the preference: when the two disagree — preference on,
           // nothing installed while consent is pending — toggling the preference would turn hooks OFF for a user
@@ -840,12 +997,12 @@ function App() {
           // checkbox renders, so it lands correct instead of flickering when an install fails. The providerId is
           // ECHOED from that row (never originated here), so nothing sends until the row has arrived.
           const [rowProviderId] =
-            Object.entries(hooksInstalled).find(([id]) => id === 'claude') ?? [];
+            Object.entries(hooksInstalled).find(([id]) => id === providerId) ?? [];
           if (rowProviderId !== undefined) {
             transport.send({
               type: 'setHooksEnabled',
               providerId: rowProviderId,
-              enabled: !claudeHooksInstalled,
+              enabled: !activeHooksInstalled,
             });
           }
         }}

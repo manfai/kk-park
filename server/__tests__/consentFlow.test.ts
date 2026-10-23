@@ -1,7 +1,6 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentStateStore } from '../src/agentStateStore.js';
 import { type ClientMessageContext, handleClientMessage } from '../src/clientMessageHandler.js';
@@ -12,11 +11,11 @@ import {
   setHooksEnabled,
 } from '../src/configPersistence.js';
 import { FileStateAdapter } from '../src/fileStateAdapter.js';
-import {
-  CONSENT_DISCLOSURE,
-  CONSENT_INSTALL_HEADLINE,
-} from '../src/providers/hook/claude/consentCopy.js';
-import { CLAUDE_HOOK_EVENTS } from '../src/providers/hook/claude/constants.js';
+import { copilotProvider } from '../src/providers/index.js';
+import { isolateHome, newTestDirectory, seedCopilotHooks } from './testSupport.js';
+
+const { headline: CONSENT_INSTALL_HEADLINE, disclosure: CONSENT_DISCLOSURE } =
+  copilotProvider.consentDisclosure();
 
 /** Let a dispatch's async chain (side effect → areHooksInstalled → persist →
  *  send) run to completion. */
@@ -28,30 +27,21 @@ function settle(): Promise<void> {
  * The in-app first-run consent flow through the standalone dispatch: the server asks over the wire during the
  * webviewReady handshake and acts on the answer via the shared modules (consentGate decides, consentExecutor
  * performs). Chief among the pinned semantics: nothing but an exact, explicit approval ever installs, and junk is
- * never read as one. Everything is per-provider — ask and answer name 'claude', records live in config.json's maps.
+ * never read as one. Everything is per-provider — ask and answer name 'copilot', records live in config.json's maps.
  */
 describe('clientMessageHandler: hooks consent flow', () => {
   let tempHome: string;
-  let originalHome: string | undefined;
   let store: AgentStateStore;
   let sent: Array<Record<string, unknown>>;
   let ctx: ClientMessageContext;
 
   /** Put our command on every installed event, as a real install would. */
   function seedInstalledHooks(): void {
-    const command = `node "${path.join(tempHome, '.pixel-agents', 'hooks', 'claude-hook.js')}"`;
-    const entry = { matcher: '', hooks: [{ type: 'command', command, timeout: 5 }] };
-    fs.mkdirSync(path.join(tempHome, '.claude'), { recursive: true });
-    fs.writeFileSync(
-      path.join(tempHome, '.claude', 'settings.json'),
-      JSON.stringify({
-        hooks: Object.fromEntries(CLAUDE_HOOK_EVENTS.map((e) => [e, [entry]])),
-      }),
-    );
+    seedCopilotHooks(tempHome);
   }
 
   function settingsJsonExists(): boolean {
-    return fs.existsSync(path.join(tempHome, '.claude', 'settings.json'));
+    return fs.existsSync(path.join(tempHome, '.copilot', 'hooks', 'pixel-agents.json'));
   }
 
   /** The strongest possible "writes nothing": the config file was never even
@@ -60,7 +50,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
     return fs.existsSync(path.join(tempHome, '.pixel-agents', 'config.json'));
   }
 
-  function answer(choice: unknown, providerId: unknown = 'claude'): void {
+  function answer(choice: unknown, providerId: unknown = 'copilot'): void {
     handleClientMessage(
       { type: 'hooksConsentResponse', providerId, choice },
       (m) => sent.push(m),
@@ -74,9 +64,8 @@ describe('clientMessageHandler: hooks consent flow', () => {
   }
 
   beforeEach(() => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-consent-flow-'));
-    originalHome = process.env.HOME;
-    process.env.HOME = tempHome;
+    tempHome = newTestDirectory('pxl-consent-flow-');
+    isolateHome(tempHome);
 
     store = new AgentStateStore();
     store.setAdapter(new FileStateAdapter({ namespace: 'standalone' }));
@@ -85,11 +74,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
   });
 
   afterEach(() => {
-    if (originalHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = originalHome;
-    }
+    vi.unstubAllEnvs();
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
@@ -105,7 +90,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
       const request = sent.find((m) => m.type === 'hooksConsentRequest');
       expect(request).toEqual({
         type: 'hooksConsentRequest',
-        providerId: 'claude',
+        providerId: 'copilot',
         headline: CONSENT_INSTALL_HEADLINE,
         disclosure: CONSENT_DISCLOSURE,
       });
@@ -126,7 +111,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
     });
 
     it('never asks once consent is recorded', async () => {
-      grantHooksConsent('claude');
+      grantHooksConsent('copilot');
       await connect();
 
       expect(sent.find((m) => m.type === 'hooksConsentRequest')).toBeUndefined();
@@ -145,7 +130,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
     it('never asks while the hooks preference is off', async () => {
       // The preference alone (a Settings toggle-off records no consent), so
       // this isolates the hooksEnabled gate from the consentAnswered gate.
-      setHooksEnabled('claude', false);
+      setHooksEnabled('copilot', false);
       await connect();
 
       expect(sent.find((m) => m.type === 'hooksConsentRequest')).toBeUndefined();
@@ -177,11 +162,11 @@ describe('clientMessageHandler: hooks consent flow', () => {
       answer('install');
       await settle();
 
-      expect(sideEffect).toEqual({ providerId: 'claude', enabled: true });
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(sideEffect).toEqual({ providerId: 'copilot', enabled: true });
+      expect(getHooksEnabled('copilot')).toBe(true);
       expect(sent.find((m) => m.type === 'hooksStatus')).toEqual({
         type: 'hooksStatus',
-        providerId: 'claude',
+        providerId: 'copilot',
         installed: true,
       });
     });
@@ -192,21 +177,21 @@ describe('clientMessageHandler: hooks consent flow', () => {
       answer('never'); // persists hooks-off first
       await settle();
       ctx.onSetHooksEnabled = () => {
-        /* the install failed: settings.json stays absent */
+        /* the install failed: pixel-agents.json stays absent */
       };
 
       answer('install');
       await settle();
 
-      expect(getHooksEnabled('claude')).toBe(false);
+      expect(getHooksEnabled('copilot')).toBe(false);
       expect(sent.filter((m) => m.type === 'hooksStatus').at(-1)).toEqual({
         type: 'hooksStatus',
-        providerId: 'claude',
+        providerId: 'copilot',
         installed: false,
       });
     });
 
-    it('never records the decline and hooks-off without touching settings.json', async () => {
+    it('never records the decline and hooks-off without touching pixel-agents.json', async () => {
       let sideEffectRan = false;
       ctx.onSetHooksEnabled = () => {
         sideEffectRan = true;
@@ -215,9 +200,9 @@ describe('clientMessageHandler: hooks consent flow', () => {
       answer('never');
       await settle();
 
-      expect(getHooksEnabled('claude')).toBe(false);
+      expect(getHooksEnabled('copilot')).toBe(false);
       // The decline is durable AND revisable: it is what a later notNow undoes.
-      expect(getHooksConsent('claude')).toBe('declined');
+      expect(getHooksConsent('copilot')).toBe('declined');
       expect(sideEffectRan).toBe(false);
       expect(settingsJsonExists()).toBe(false);
     });
@@ -233,7 +218,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
 
       expect(sideEffectRan).toBe(false);
       expect(settingsJsonExists()).toBe(false);
-      expect(getHooksConsent('claude')).toBe('unanswered');
+      expect(getHooksConsent('copilot')).toBe('unanswered');
       expect(configJsonExists()).toBe(false);
     });
 
@@ -254,7 +239,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
 
         expect(sideEffectRan).toBe(false);
         expect(settingsJsonExists()).toBe(false);
-        expect(getHooksConsent('claude')).toBe('unanswered');
+        expect(getHooksConsent('copilot')).toBe('unanswered');
         expect(configJsonExists()).toBe(false);
       },
     );
@@ -262,7 +247,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
     // The provider id is echoed from the request, so an id naming no
     // registered provider is a crafted message — dropped exactly like junk.
     // A MISSING id too: the pre-providerId wire shape must not act on anything.
-    it.each([['copilot'], [''], [42], [null], [{}], ['missing']])(
+    it.each([['unsupported-provider'], [''], [42], [null], [{}], ['missing']])(
       'unknown providerId %j writes nothing, even with a real choice',
       async (junkId) => {
         let sideEffectRan = false;
@@ -276,7 +261,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
         await settle();
 
         expect(sideEffectRan).toBe(false);
-        expect(getHooksConsent('claude')).toBe('unanswered');
+        expect(getHooksConsent('copilot')).toBe('unanswered');
         expect(configJsonExists()).toBe(false);
       },
     );
@@ -297,7 +282,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
 
       expect(sideEffectRan).toBe(false);
       expect(settingsJsonExists()).toBe(false);
-      expect(getHooksConsent('claude')).toBe('unanswered');
+      expect(getHooksConsent('copilot')).toBe('unanswered');
       expect(configJsonExists()).toBe(false);
     });
   });
@@ -309,15 +294,12 @@ describe('clientMessageHandler: hooks consent flow', () => {
   describe('hooksConsentResponse revision over an earlier answer', () => {
     /** What a successful uninstall leaves behind. */
     function removeOurHooks(): void {
-      fs.writeFileSync(
-        path.join(tempHome, '.claude', 'settings.json'),
-        JSON.stringify({ hooks: {} }),
-      );
+      fs.unlinkSync(path.join(tempHome, '.copilot', 'hooks', 'pixel-agents.json'));
     }
 
     it('a revised never takes the full toggle-off path: uninstall, then persist off', async () => {
       seedInstalledHooks();
-      grantHooksConsent('claude'); // the earlier Install recorded the grant
+      grantHooksConsent('copilot'); // the earlier Install recorded the grant
       let sideEffect: { providerId: string; enabled: boolean } | undefined;
       ctx.onSetHooksEnabled = (providerId, enabled) => {
         sideEffect = { providerId, enabled };
@@ -327,21 +309,21 @@ describe('clientMessageHandler: hooks consent flow', () => {
       answer('never');
       await settle();
 
-      expect(sideEffect).toEqual({ providerId: 'claude', enabled: false });
-      expect(getHooksEnabled('claude')).toBe(false);
+      expect(sideEffect).toEqual({ providerId: 'copilot', enabled: false });
+      expect(getHooksEnabled('copilot')).toBe(false);
       // The record flips to the decline — the truthful current answer, and
       // the provenance a later notNow revision reads.
-      expect(getHooksConsent('claude')).toBe('declined');
+      expect(getHooksConsent('copilot')).toBe('declined');
       expect(sent.find((m) => m.type === 'hooksStatus')).toEqual({
         type: 'hooksStatus',
-        providerId: 'claude',
+        providerId: 'copilot',
         installed: false,
       });
     });
 
     it('a revised notNow reverts everything: uninstall, clear the record, preference untouched', async () => {
       seedInstalledHooks();
-      grantHooksConsent('claude');
+      grantHooksConsent('copilot');
       ctx.onSetHooksEnabled = (_providerId, enabled) => {
         if (!enabled) removeOurHooks();
       };
@@ -349,12 +331,12 @@ describe('clientMessageHandler: hooks consent flow', () => {
       answer('notNow');
       await settle();
 
-      expect(getHooksConsent('claude')).toBe('unanswered');
+      expect(getHooksConsent('copilot')).toBe('unanswered');
       // "Not now" must not persist hooks-off — that would retire the ask.
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksEnabled('copilot')).toBe(true);
       expect(sent.find((m) => m.type === 'hooksStatus')).toEqual({
         type: 'hooksStatus',
-        providerId: 'claude',
+        providerId: 'copilot',
         installed: false,
       });
 
@@ -371,7 +353,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
     // hooksStatus is what the UI renders either way.
     it('a failed revert keeps the grant and reports hooks still installed', async () => {
       seedInstalledHooks();
-      grantHooksConsent('claude');
+      grantHooksConsent('copilot');
       ctx.onSetHooksEnabled = () => {
         /* the uninstall failed: our entries stay */
       };
@@ -379,19 +361,19 @@ describe('clientMessageHandler: hooks consent flow', () => {
       answer('notNow');
       await settle();
 
-      expect(getHooksConsent('claude')).toBe('granted');
+      expect(getHooksConsent('copilot')).toBe('granted');
       expect(sent.find((m) => m.type === 'hooksStatus')).toEqual({
         type: 'hooksStatus',
-        providerId: 'claude',
+        providerId: 'copilot',
         installed: true,
       });
     });
 
-    // The population issue #377 is about: a settings.json the installer refuses to touch. `install` records the grant
+    // The population issue #377 is about: a pixel-agents.json the installer refuses to touch. `install` records the grant
     // BEFORE it writes, so a failed install leaves a grant with nothing on disk — and the grant alone retires the ask.
     // Reading the revert off `installed` saw "nothing to undo" and stranded the user with an ask that never came back.
     it('a revised notNow clears a grant left by a FAILED install', async () => {
-      grantHooksConsent('claude'); // the Install click landed the grant...
+      grantHooksConsent('copilot'); // the Install click landed the grant...
       // ...and nothing is on disk: the install threw and wrote nothing.
       let uninstallAttempted = false;
       ctx.onSetHooksEnabled = () => {
@@ -401,12 +383,12 @@ describe('clientMessageHandler: hooks consent flow', () => {
       answer('notNow');
       await settle();
 
-      expect(getHooksConsent('claude')).toBe('unanswered');
+      expect(getHooksConsent('copilot')).toBe('unanswered');
       // Nothing of ours is installed, so there is nothing to remove — and
       // routing through the uninstaller would surface a file error for the act
       // of declining.
       expect(uninstallAttempted).toBe(false);
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksEnabled('copilot')).toBe(true);
 
       // The load-bearing half: the ask genuinely comes back.
       sent = [];
@@ -425,16 +407,16 @@ describe('clientMessageHandler: hooks consent flow', () => {
 
       answer('never');
       await settle();
-      expect(getHooksConsent('claude')).toBe('declined');
-      expect(getHooksEnabled('claude')).toBe(false);
+      expect(getHooksConsent('copilot')).toBe('declined');
+      expect(getHooksEnabled('copilot')).toBe(false);
 
       answer('notNow');
       await settle();
 
       // The world is as if never answered: no record, default preference,
       // nothing installed, and no settings-file access for either answer.
-      expect(getHooksConsent('claude')).toBe('unanswered');
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksConsent('copilot')).toBe('unanswered');
+      expect(getHooksEnabled('copilot')).toBe(true);
       expect(sideEffectRan).toBe(false);
       expect(settingsJsonExists()).toBe(false);
 
@@ -451,25 +433,25 @@ describe('clientMessageHandler: hooks consent flow', () => {
     it('never, then a FAILED install, then notNow — the ask still returns', async () => {
       ctx.onSetHooksEnabled = (_providerId, enabled) => {
         // The real side effect (cli.ts) grants BEFORE it writes; here the
-        // write itself fails, so settings.json stays absent.
-        if (enabled) grantHooksConsent('claude');
+        // write itself fails, so pixel-agents.json stays absent.
+        if (enabled) grantHooksConsent('copilot');
       };
 
       answer('never');
       await settle();
-      expect(getHooksConsent('claude')).toBe('declined');
-      expect(getHooksEnabled('claude')).toBe(false);
+      expect(getHooksConsent('copilot')).toBe('declined');
+      expect(getHooksEnabled('copilot')).toBe(false);
 
       answer('install');
       await settle();
-      expect(getHooksConsent('claude')).toBe('granted');
+      expect(getHooksConsent('copilot')).toBe('granted');
       // The grant took the decline's preference remnant with it.
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksEnabled('copilot')).toBe(true);
 
       answer('notNow');
       await settle();
-      expect(getHooksConsent('claude')).toBe('unanswered');
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksConsent('copilot')).toBe('unanswered');
+      expect(getHooksEnabled('copilot')).toBe(true);
 
       // The load-bearing half: the ask genuinely comes back.
       sent = [];
@@ -488,7 +470,7 @@ describe('clientMessageHandler: hooks consent flow', () => {
           // The real side effect (cli.ts) grants BEFORE it writes, then
           // installs. Here the write is a slow one that only lands when we
           // let it, so the revision can arrive mid-flight.
-          grantHooksConsent('claude');
+          grantHooksConsent('copilot');
           return new Promise<void>((resolve) => {
             resolveInstall = () => {
               seedInstalledHooks();
@@ -511,11 +493,11 @@ describe('clientMessageHandler: hooks consent flow', () => {
       // The revision ran AFTER the install landed, so it saw the hooks and
       // took the full toggle-off path rather than merely persisting a
       // preference beside live entries.
-      expect(getHooksConsent('claude')).toBe('declined');
-      expect(getHooksEnabled('claude')).toBe(false);
+      expect(getHooksConsent('copilot')).toBe('declined');
+      expect(getHooksEnabled('copilot')).toBe(false);
       expect(sent.filter((m) => m.type === 'hooksStatus').at(-1)).toEqual({
         type: 'hooksStatus',
-        providerId: 'claude',
+        providerId: 'copilot',
         installed: false,
       });
     });

@@ -3,12 +3,8 @@ import path from 'node:path';
 
 import { expect, test } from '../../fixtures/standalone';
 import { buildSeedLayout } from '../../helpers/layout-seed';
-import {
-  getDirectoryAreas,
-  getDirectoryModal,
-  openDirectoryModal,
-  openLaunchDrawer,
-} from '../../helpers/webview';
+import { openSessionsManager } from '../../helpers/sessions';
+import { getDirectoryAreas, getDirectoryModal, openDirectoryModal } from '../../helpers/webview';
 
 /**
  * The Directory modal itself: its keyboard contract and the Area mapping it
@@ -71,8 +67,10 @@ test.describe('Standalone / Directory modal keyboard', () => {
     // round trip to the host.
     await page.waitForTimeout(1_000);
     expect(readSharedConfig(standalone.tmpHome).directories ?? []).toEqual([]);
-    const drawer = await openLaunchDrawer(page);
-    await expect(drawer.getByRole('button', { name: 'Never Saved', exact: true })).toHaveCount(0);
+    const manager = await openSessionsManager(page);
+    await expect(
+      manager.getByRole('option', { name: `Never Saved — ${target}`, exact: true }),
+    ).toHaveCount(0);
   });
 
   test('Enter in the path field saves @area:standalone', async ({ page, standalone }) => {
@@ -86,10 +84,10 @@ test.describe('Standalone / Directory modal keyboard', () => {
     await pathField.press('Enter');
 
     await expect(modal).toBeHidden({ timeout: 15_000 });
-    const drawer = await openLaunchDrawer(page);
+    const drawer = await openSessionsManager(page);
     await expect(
-      drawer.getByRole('button', { name: 'Typed And Entered', exact: true }),
-    ).toBeVisible();
+      drawer.getByRole('option', { name: `Typed And Entered — ${target}`, exact: true }),
+    ).toHaveCount(1);
   });
 });
 
@@ -118,8 +116,9 @@ test.describe('Standalone / Directory Area mapping', () => {
       .toEqual({ [hostName]: [AREA] });
 
     // Reopened, the entry still shows its Area.
-    const drawer = await openLaunchDrawer(page);
-    await drawer.getByRole('button', { name: `Edit ${hostName}` }).click();
+    const drawer = await openSessionsManager(page);
+    await drawer.getByRole('combobox').selectOption(standalone.tmpHome);
+    await drawer.getByRole('button', { name: 'Edit Directory', exact: true }).click();
     const reopened = getDirectoryModal(page);
     await expect(reopened).toBeVisible();
     await expect(

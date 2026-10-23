@@ -219,6 +219,9 @@ export const GREETER_ID = -1_000_000_000;
  *  Intro is diegetic furniture over the office, not a modal, so a modal opened
  *  on top of it must cover it rather than slide underneath. */
 export const INTRO_BUBBLE_Z_INDEX = 45;
+export const ARCHIVE_CONFIRMATION_Z_INDEX = 60;
+export const ARCHIVE_CAGE_TYPE = 'JAIL_CAGE';
+export const ARCHIVE_LABEL_GAP_PX = 8;
 /** ToolOverlay stacking: status label panels (selected one on top), then the
  *  characters' speech bubbles above every label — all below the Intro bubble. */
 export const OVERLAY_LABEL_Z_INDEX = 41;
@@ -239,9 +242,11 @@ export const INTRO_BUBBLE_OFFSET_X_WORLD = 10;
  *  a tall column (still clamped to the container on narrow panels). */
 export const INTRO_BUBBLE_MAX_WIDTH_PX = 560;
 export const INTRO_BUBBLE_EDGE_MARGIN_PX = 4;
-/** Where the Intro's Claude Code step sends people who don't have it yet. */
-export const CLAUDE_CODE_URL = 'https://claude.com/claude-code';
-export const CLAUDE_CODE_INSTALL_COMMAND = 'npm install -g @anthropic-ai/claude-code';
+/** Where the Intro sends people who need to install Copilot CLI. */
+export const COPILOT_CLI_URL =
+  'https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli';
+export const COPILOT_CLI_INSTALL_COMMAND = 'npm install -g @github/copilot';
+export const THINKING_ACTIVITY_TEXT = 'Thinking';
 /** Speech-tail squares: placed at fraction `t` along the segment from the
  *  bubble's nearest edge point to the greeter's head, shrinking toward the
  *  speaker. Recomputed every frame so the tail stays connected no matter where
@@ -439,7 +444,7 @@ export const MOBILE_EDGE_SWIPE_COMMIT_VELOCITY = 0.3;
  *  (the rest carries over from the previous estimate). */
 export const MOBILE_EDGE_SWIPE_VELOCITY_WEIGHT = 0.8;
 /** Slightly smaller than the desktop 13px: a 390px phone fits ~46 columns at
- *  13px but ~50 at 12px, and Claude Code's TUI degrades below ~45 columns. */
+ *  13px but ~50 at 12px, leaving more room for terminal content. */
 export const MOBILE_TERMINAL_FONT_SIZE_PX = 12;
 
 // ── Touch input (every surface) ──────────────────────────────
@@ -450,7 +455,7 @@ export const TOUCH_TAP_MAX_MOVE_PX = 10;
 /** A press longer than this is not a tap even if the finger never moved. */
 export const TOUCH_TAP_MAX_DURATION_MS = 350;
 
-// ── Terminal touch (touchGesture.ts, selectionOverlay.ts, flowCopy.ts) ──
+// ── Terminal touch (touchGesture.ts, selectionOverlay.ts) ──
 /** Hold a finger within the tap slop for this long on the terminal to start
  *  text selection instead of scrolling: the word under the finger is
  *  selected, and dragging then extends the selection cell by cell. */
@@ -477,11 +482,6 @@ export const TERMINAL_SEL_HANDLE_WIDTH_PX = 24;
 /** Side of a selection handle's square knob (above the start bar, below the
  *  end bar). Feeds the `.terminal-sel-handle` CSS through --sel-knob. */
 export const TERMINAL_SEL_HANDLE_KNOB_PX = 12;
-/** Copy-flowing (flowCopy.ts) judges "the next word would not have fit on
- *  the row above" against `cols` minus this: Claude Code wraps prose a few
- *  columns short of the terminal width (its own gutters). Too small and real
- *  soft wraps stay broken; too large and short deliberate lines get joined. */
-export const TERMINAL_COPY_WRAP_SLACK_COLS = 4;
 /** Flick decay after a terminal touch-scroll release, applied per millisecond
  *  of frame time (0.998 ≈ iOS UIScrollView's normal deceleration rate). */
 export const TERMINAL_FLICK_DECAY_PER_MS = 0.998;
@@ -525,7 +525,7 @@ export const TERMINAL_SEQ_ARROW_DOWN = '\x1b[B';
 export const TERMINAL_SEQ_ARROW_RIGHT = '\x1b[C';
 export const TERMINAL_SEQ_ARROW_LEFT = '\x1b[D';
 /** Accessory keys shown above the iOS keyboard in terminal view — the keys a
- *  Claude Code TUI needs that the software keyboard lacks. `sequence` is the
+ *  terminal application needs that the software keyboard lacks. `sequence` is the
  *  raw bytes written to the PTY: shift+tab is CSI Z (back-tab). */
 export const MOBILE_KEY_BAR_KEYS: ReadonlyArray<{
   label: string;
@@ -535,7 +535,7 @@ export const MOBILE_KEY_BAR_KEYS: ReadonlyArray<{
   /** Press-hold-slide emits arrow keys with the finger in all four
    *  directions, echoing the iOS space-bar trackpad (whose real caret
    *  gesture can't reach xterm — its textarea must stay empty for input
-   *  diffing). Drives Claude Code's TUI menus (/resume, /model) and the
+   *  diffing). Drives terminal menus and the
    *  input-line cursor; the iOS keyboard has no arrows of its own. */
   trackpad?: boolean;
 }> = [
@@ -543,10 +543,6 @@ export const MOBILE_KEY_BAR_KEYS: ReadonlyArray<{
   { label: 'shift+tab', sequence: '\x1b[Z' },
   { label: 'esc', sequence: '\x1b' },
   { label: '✜', trackpad: true },
-  // Line break without submitting: Claude Code's backslash+Enter escape —
-  // its universal form (shift+enter needs a /terminal-setup rebind that
-  // can't exist on a phone keyboard).
-  { label: '↵', sequence: '\\\r' },
 ];
 /** Finger travel per emitted arrow while sliding on the trackpad key. */
 export const MOBILE_TRACKPAD_STEP_PX = 16;

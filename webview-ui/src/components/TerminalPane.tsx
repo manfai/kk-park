@@ -42,7 +42,7 @@ export interface TerminalInputHandle {
   /** Write raw bytes (key sequences) straight to the PTY. */
   send: (data: string) => void;
   /** Paste text through xterm, which wraps it in bracketed-paste markers when
-   *  the running app has turned that mode on — Claude Code has, and without
+   *  the running app has turned that mode on, and without
    *  the markers a multiline paste would submit at its first newline. */
   paste: (data: string) => void;
 }
@@ -124,7 +124,7 @@ export function TerminalPane({
     void connection.connect();
 
     term.onData((data) => connection.write(data));
-    // Keyboard copy (verbatim; Alt+C = copy as text) and paste, OSC 52 writes.
+    // Verbatim keyboard copy and paste, OSC 52 writes.
     const detachClipboard = attachClipboardInput(term, {
       isActive: () => isActiveRef.current,
     });

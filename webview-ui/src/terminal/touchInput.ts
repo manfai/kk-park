@@ -2,7 +2,6 @@ import type { Terminal } from '@xterm/xterm';
 
 import { TERMINAL_LONG_PRESS_MS } from '../constants.js';
 import { writeClipboardText } from './clipboard.js';
-import { terminalCopyText } from './flowCopy.js';
 import { selectionLength } from './selectionMath.js';
 import { createSelectionOverlay } from './selectionOverlay.js';
 import {
@@ -62,7 +61,7 @@ export function attachTouchInput(
   const overlay = createSelectionOverlay(host, {
     grid: () => terminalCellGrid(term, host),
     hasSelection: () => term.hasSelection(),
-    onCopy: (mode) => {
+    onCopy: () => {
       if (state.phase !== 'selected') {
         dispatch({ kind: 'dismiss' });
         return;
@@ -71,8 +70,7 @@ export function attachTouchInput(
       // refused write leaves them up to try again. Called synchronously from
       // the click, so the plain-http fallback still has its user gesture.
       const copying = state;
-      const text = terminalCopyText(term.getSelection(), mode, term.cols, copying.range.startCol);
-      void writeClipboardText(text).then((ok) => {
+      void writeClipboardText(term.getSelection()).then((ok) => {
         if (!ok) console.warn('[Webview] Terminal copy failed; selection kept');
         // Dismiss only the selection that was copied — a touch since then
         // has already replaced it.
@@ -98,7 +96,7 @@ export function attachTouchInput(
   // target of its touchstart — for the gesture's whole life. xterm's DOM
   // renderer rebuilds a row's spans on each repaint of that row (renderRows →
   // replaceChildren), and the first wheel tick of a drag makes the TUI
-  // repaint the transcript — so a drag that began on a text span loses its
+  // repaint their content — so a drag that began on a text span loses its
   // target node a tick or two in. Detached, the events stop propagating, and
   // the capture listeners on host fall permanently silent: no more moves, no
   // touchend, not even a touchcancel. A drag that begins on a blank cell
@@ -139,7 +137,7 @@ export function attachTouchInput(
 
   // Synthetic wheel events dispatched into xterm's own wheel pipeline, which
   // already routes every regime correctly: mouse reports to the TUI when
-  // tracking is on (Claude Code scrolls its transcript), viewport scrollback
+  // tracking is on (the application handles scrolling), viewport scrollback
   // when off, arrow keys on the alt screen.
   const emitWheel = (lines: number, x: number, y: number) => {
     const target = terminalScreen(term, host);

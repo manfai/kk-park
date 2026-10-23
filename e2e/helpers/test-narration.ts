@@ -9,10 +9,10 @@ import { getExternalNarrationLogPath } from './external-monitor';
  * Test-action narrator: the yellow `[test]` voice in every VS Code run video.
  *
  * The narrator writes one line per action taken / assertion verified to a
- * per-test log (`<tmpHome>/.claude-mock/test-narration.log`). That log is
+ * per-test log (`<tmpHome>/.copilot-mock/test-narration.log`). That log is
  * displayed on two surfaces, both merely tailing the file:
  *   - the fixture's "e2e monitor" terminal (opened once per test), and
- *   - every mock-claude terminal tab (its wrapper backgrounds a headerless
+ *   - every mock-copilot terminal tab (its wrapper backgrounds a headerless
  *     tail so the story shows even when an agent tab takes focus).
  *
  * Two ways to narrate:
@@ -24,7 +24,7 @@ import { getExternalNarrationLogPath } from './external-monitor';
  *     through 60+ call sites. It no-ops until the fixture sets a context.
  *
  * STRICTLY COSMETIC. Pixel Agents never reads terminal output (its inputs are
- * JSONL transcripts and hook POSTs), so no assertion may depend on narration —
+ * hook POSTs), so no assertion may depend on narration —
  * deleting every step()/check() call must leave all tests passing. Every
  * failure here is swallowed. The suite runs with workers:1, so the single
  * module-level context cannot cross-contaminate tests.
@@ -47,7 +47,7 @@ export interface TestNarrator {
 let context: { logPath: string; startedAt: number } | null = null;
 
 export function getTestNarrationLogPath(tmpHome: string): string {
-  return path.join(tmpHome, '.claude-mock', 'test-narration.log');
+  return path.join(tmpHome, '.copilot-mock', 'test-narration.log');
 }
 
 function write(line: string): void {
@@ -119,7 +119,9 @@ export async function finishNarration(window: Page): Promise<void> {
     // recorded Electron window. Frame-based, not an arbitrary timer.
     await window.evaluate(
       () =>
-        new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
     );
   } catch (error) {
     console.warn(
@@ -139,7 +141,7 @@ export async function finishNarration(window: Page): Promise<void> {
  *
  * Opened after VS Code finishes restoring the review layout and before any
  * agent terminal exists. Deliberately NO tab focus/click juggling — that
- * interaction class broke heuristic terminal↔agent tracking.
+ * interaction class interfered with terminal focus.
  */
 export async function openMonitorTerminal(window: Page, tmpHome: string): Promise<void> {
   try {

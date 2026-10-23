@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import { expect, test } from '../../fixtures/standalone';
@@ -11,11 +10,14 @@ import {
   expectOverlayCount,
   expectOverlayVisible,
 } from '../../helpers/office';
+import {
+  closeSessionsManager,
+  nameSession,
+  sessionRow,
+  showAllSessions,
+} from '../../helpers/sessions';
 import { openSettingsModal, setSettings } from '../../helpers/webview';
 
-// The DebugView diagnostics block polls every 2s (see DebugView.tsx); allow a
-// few polling rounds plus IPC/render slop.
-const DIAGNOSTICS_POLL_TIMEOUT_MS = 15_000;
 // onReloadAssets does its filesystem work after the externalAssetDirectoriesUpdated
 // reply, so the re-broadcast lands slightly later than the dir-list update.
 const ASSET_RELOAD_TIMEOUT_MS = 15_000;
@@ -24,72 +26,152 @@ const ASSET_RELOAD_TIMEOUT_MS = 15_000;
 const CONNECTION_STATE_TIMEOUT_MS = 15_000;
 
 test.describe('Standalone / UI', () => {
-  test('closeAgent despawns the character @area:standalone', async ({ page, standalone }) => {
-    await setSettings(page, {
-      alwaysShowLabels: true,
-      hooksEnabled: true,
-      watchAllSessions: true,
-      debugView: false,
+  test.describe('Archive parking', () => {
+    test.use({
+      standaloneOptions: {
+        seedLayout: buildSeedLayout({
+          furniture: [{ uid: 'archive-cage', type: 'JAIL_CAGE', col: 5, row: 5 }],
+        }),
+      },
     });
-    await standalone.drainMessages();
+    test('Archive confines one character per cage, persists across reload and releases on restore @area:standalone', async ({
+      page,
+      standalone,
+    }) => {
+      await setSettings(page, {
+        alwaysShowLabels: true,
+        hooksEnabled: true,
+        watchAllSessions: true,
+        debugView: false,
+      });
+      await standalone.drainMessages();
 
-    const sessionId = 'standalone-close-agent-session';
-    const filePath = path.join(standalone.workspaceDir, 'close-agent.ts');
+      const sessionId = 'standalone-close-agent-session';
+      const filePath = path.join(standalone.workspaceDir, 'close-agent.ts');
 
-    await sendHookEvent(
-      standalone.hookServerConfig,
-      sessionStartStartup(sessionId, standalone.workspaceDir),
-    );
-    await sendHookEvent(standalone.hookServerConfig, {
-      session_id: sessionId,
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Read',
-      tool_input: { file_path: filePath },
+      await sendHookEvent(
+        standalone.hookServerConfig,
+        sessionStartStartup(sessionId, standalone.workspaceDir),
+      );
+      await nameSession(page, sessionId, 'Archive Me');
+      await sendHookEvent(standalone.hookServerConfig, {
+        sessionId: sessionId,
+        cwd: standalone.workspaceDir,
+        hook_event_name: 'preToolUse',
+        toolName: 'view',
+        toolArgs: { path: filePath },
+      });
+
+      await expectOverlayCount(page, 1);
+      await expectOverlayVisible(page, 'Reading close-agent.ts');
+      await standalone.drainMessages();
+
+      await closeAgentFromOverlay(page, { text: 'Reading close-agent.ts' });
+
+      const confirmation = page.getByTestId('archive-confirmation');
+      await expect(confirmation).toBeVisible();
+      await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expectOverlayVisible(page, 'Reading close-agent.ts');
+      await closeAgentFromOverlay(page, { text: 'Reading close-agent.ts' });
+      await confirmation.getByRole('button', { name: 'Archive character', exact: true }).click();
+      await expectOverlayCount(page, 1);
+      await expectOverlayVisible(page, 'ARCHIVED');
+      await expect(page.getByTitle('Archive Me', { exact: true })).toHaveCount(0);
+      await expect(page.getByTestId('agent-overlay')).toHaveText('ARCHIVED');
+      await expect(page.getByTestId('archived-label')).toHaveCSS('font-size', '44px');
+      const parkedCharacter = () =>
+        page.evaluate(() =>
+          (window as TestHooksWindow).__pixelAgentsTestHooks
+            ?.getCharacters?.()
+            .find((character) => character.isArchived),
+        );
+      await expect.poll(async () => (await parkedCharacter())?.state).toBe('idle');
+      const parked = await parkedCharacter();
+      expect(parked).toBeTruthy();
+      expect(parked).toMatchObject({
+        archiveCageId: 'archive-cage',
+        tileCol: 5,
+        tileRow: 7,
+        x: 96,
+        y: 120,
+      });
+      await sendHookEvent(standalone.hookServerConfig, {
+        sessionId,
+        cwd: standalone.workspaceDir,
+        hook_event_name: 'userPromptSubmitted',
+      });
+      await expect.poll(parkedCharacter).toEqual(parked);
+      await setSettings(page, { alwaysShowLabels: false });
+      await page.reload();
+      await expectOverlayVisible(page, 'ARCHIVED');
+      await expect(page.getByTestId('agent-overlay')).toHaveText('ARCHIVED');
+      await expect(page.getByTitle('Archive Me', { exact: true })).toHaveCount(0);
+      await expect.poll(async () => (await parkedCharacter())?.state).toBe('idle');
+      expect((await parkedCharacter())?.id).toBe(parked!.id);
+      await expect.poll(async () => (await parkedCharacter())?.archiveCageId).toBe('archive-cage');
+      await page.screenshot({ path: test.info().outputPath('archived-inside-cage.png') });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(page.getByTitle('Archive Me', { exact: true })).toHaveCount(0);
+      await expect(page.getByTestId('archived-label')).toBeVisible();
+      await page.screenshot({ path: test.info().outputPath('archived-mobile.png') });
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await setSettings(page, { alwaysShowLabels: true });
+
+      const secondId = 'second-cage-session';
+      await sendHookEvent(
+        standalone.hookServerConfig,
+        sessionStartStartup(secondId, standalone.workspaceDir),
+      );
+      await nameSession(page, secondId, 'Waiting for Cage');
+      await closeAgentFromOverlay(page, { text: 'Waiting for Cage' });
+      await expect(confirmation.getByRole('alert')).toContainText('No reachable free Jail Cage');
+      await expect(
+        confirmation.getByRole('button', { name: 'Archive character', exact: true }),
+      ).toBeDisabled();
+      await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await showAllSessions(page);
+      await sessionRow(page, sessionId)
+        .getByRole('button', { name: 'Restore to office', exact: true })
+        .click();
+      await expect(sessionRow(page, sessionId)).not.toContainText('Archived');
+      await closeSessionsManager(page);
+      await expect(page.getByTitle('Archive Me', { exact: true })).toBeVisible();
+      await closeAgentFromOverlay(page, { text: 'Waiting for Cage' });
+      await confirmation.getByRole('button', { name: 'Archive character', exact: true }).click();
+      await expect.poll(async () => (await parkedCharacter())?.state).toBe('idle');
+      expect((await parkedCharacter())?.id).not.toBe(parked!.id);
+      expect((await parkedCharacter())?.archiveCageId).toBe('archive-cage');
+      const messages = await standalone.drainMessages();
+      expect(messages.some((message) => message.type === 'agentClosed')).toBe(false);
     });
-
-    await expectOverlayCount(page, 1);
-    await expectOverlayVisible(page, 'Reading close-agent.ts');
-    await standalone.drainMessages();
-
-    await closeAgentFromOverlay(page, { text: 'Reading close-agent.ts' });
-
-    await expectOverlayCount(page, 0);
-    const messages = await standalone.drainMessages();
-    expect(messages.some((message) => message.type === 'agentClosed')).toBe(true);
   });
 
-  test('Debug View renders JSONL diagnostics in standalone @area:standalone', async ({
+  test('Debug View shows hook delivery diagnostics @area:standalone', async ({
     page,
     standalone,
   }) => {
     await setSettings(page, {
       debugView: true,
-      hooksEnabled: true,
-      watchAllSessions: true,
       alwaysShowLabels: true,
+      watchAllSessions: true,
     });
-
     const sessionId = 'standalone-debug-view-session';
-    const filePath = path.join(standalone.workspaceDir, 'debug-view.ts');
-
     await sendHookEvent(
       standalone.hookServerConfig,
       sessionStartStartup(sessionId, standalone.workspaceDir),
     );
+    await nameSession(page, sessionId, 'Debug Reader');
     await sendHookEvent(standalone.hookServerConfig, {
-      session_id: sessionId,
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Read',
-      tool_input: { file_path: filePath },
+      sessionId,
+      cwd: standalone.workspaceDir,
+      hook_event_name: 'preToolUse',
+      toolName: 'view',
+      toolArgs: { path: 'debug-view.ts' },
     });
-
-    // Presence of the diagnostics block (either branch) is the proof that the
-    // agentDiagnostics reply reached the webview via transport.onMessage; do
-    // not assert a specific jsonlExists branch (a hook-only session may or may
-    // not have a materialized transcript file).
-    await expect(page.getByText(/JSONL (connected|not found)/)).toBeVisible({
-      timeout: DIAGNOSTICS_POLL_TIMEOUT_MS,
+    await expect(page.getByText('Hooks received', { exact: true })).toBeVisible({
+      timeout: 15_000,
     });
+    await expect(page.getByText(/Last data:/)).toBeVisible();
   });
 
   test('adding an external asset directory triggers a live asset reload @area:standalone', async ({
@@ -148,7 +230,7 @@ test.describe('Standalone / UI', () => {
       areas: [{ label: uniqueLabel, color: '#4287f5' }],
       areaTiles: [{ col: 1, row: 1, label: uniqueLabel }],
     });
-    const tmpFile = path.join(os.tmpdir(), `pixel-agents-import-${Date.now().toString()}.json`);
+    const tmpFile = path.join(standalone.workspaceDir, 'import-layout.json');
     fs.writeFileSync(tmpFile, JSON.stringify(layout));
 
     try {
@@ -163,7 +245,7 @@ test.describe('Standalone / UI', () => {
       await expect
         .poll(() =>
           page.evaluate(
-            () => (window as TestHooksWindow).__pixelAgentsTestHooks?.getAreas?.() ?? [],
+            () => (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getAreas?.() ?? [],
           ),
         )
         .toContainEqual({ label: uniqueLabel, color: '#4287f5' });

@@ -19,8 +19,8 @@ a TRI-STATE (`'granted' | 'declined'`, absent = unanswered) rather than a boolea
 
 - **Our hooks on disk.** The obvious one.
 - **A grant with nothing on disk.** `install` records the grant _before_ it writes, so
-  an install that then failed — the unparseable `settings.json` of issue #377, exactly
-  the population this gate exists for — leaves a grant alone. The grant alone retires
+  an install that then failed — for example, a conflicting hook configuration —
+  leaves a grant alone. The grant alone retires
   the ask, so a revert keyed only on the install state reads "nothing to undo" and
   leaves the user with an ask that can never come back.
 - **A persisted hooks-off the answer itself wrote.** `never` turns the provider's hooks
@@ -33,12 +33,12 @@ a TRI-STATE (`'granted' | 'declined'`, absent = unanswered) rather than a boolea
 
 `consentActionFor(choice, { installed, consent })`, in `server/src/providers/hook/`:
 
-| choice | nothing left | grant (installed or not) | decline |
-| --- | --- | --- | --- |
-| `install` | `install` | `install` | `install` |
-| `never` | `persistOff` | `disable` if installed, else `persistOff` | `persistOff` |
-| `notNow` | `none` | `revert` | `revertDecline` |
-| anything else | `none` | `none` | `none` |
+| choice        | nothing left | grant (installed or not)                  | decline         |
+| ------------- | ------------ | ----------------------------------------- | --------------- |
+| `install`     | `install`    | `install`                                 | `install`       |
+| `never`       | `persistOff` | `disable` if installed, else `persistOff` | `persistOff`    |
+| `notNow`      | `none`       | `revert`                                  | `revertDecline` |
+| anything else | `none`       | `none`                                    | `none`          |
 
 - `install` grants and installs through the same path as the Settings toggle. A grant
   REPLACING a decline also deletes that decline's hooks-off remnant in the same write:
@@ -56,7 +56,7 @@ a TRI-STATE (`'granted' | 'declined'`, absent = unanswered) rather than a boolea
 - Every unrecognized value writes nothing: junk must never read as approval, as a
   durable decline, or as an uninstall trigger.
 
-Callers pass a fresh `areHooksInstalled()` and degrade an unreadable settings file to
+Callers pass a fresh `areHooksInstalled()` and degrade an unreadable hook file to
 `installed: false`, so no choice ever uninstalls on a guess.
 
 ## Considered options

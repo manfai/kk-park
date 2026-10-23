@@ -4,8 +4,8 @@
  * finger), long-press text selection, and dragging the selection's handles.
  *
  * Why synthesize any of this: xterm handles touch drags natively only while
- * the app has NOT enabled mouse tracking — Claude Code has, so on a phone its
- * transcript can't be scrolled at all — and native iOS selection is
+ * the app has NOT enabled mouse tracking — full-screen TUIs may, so their
+ * content otherwise cannot be touch-scrolled — and native iOS selection is
  * deliberately dead on the terminal (every touch default is prevented to keep
  * Safari from claiming gestures). Drags become wheel ticks fed into xterm's
  * own wheel pipeline, selection is rebuilt on xterm's selection model.

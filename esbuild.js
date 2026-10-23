@@ -36,22 +36,16 @@ function copyAssets() {
 
 /**
  * Bundle hook scripts (TypeScript) to dist/hooks via esbuild.
- * Produces a self-contained CJS file with shebang for Claude Code to execute.
+ * Produces a self-contained CJS bridge for Copilot CLI hooks.
  */
 function buildHooks() {
-  const entry = path.join(
-    __dirname,
-    'server',
-    'src',
-    'providers',
-    'hook',
-    'claude',
-    'hooks',
-    'claude-hook.ts',
-  );
-  if (!fs.existsSync(entry)) return;
   require('esbuild').buildSync({
-    entryPoints: [entry],
+    entryPoints: {
+      'copilot-hook': path.join(
+        __dirname,
+        'server/src/providers/hook/copilot/hooks/copilot-hook.ts',
+      ),
+    },
     bundle: true,
     platform: 'node',
     target: 'node18',

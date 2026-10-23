@@ -9,7 +9,7 @@
  * matrix effect, and despawn must be idempotent because every close path of
  * the bubble funnels into it.
  *
- * WHY THIS IS A UNIT TEST, given "E2E over webview unit tests" (CLAUDE.md):
+ * WHY THIS IS A UNIT TEST, given the project's E2E-first policy:
  * that decision is about UI internals, which community PRs churn. This file
  * tests the OfficeState DOMAIN MODEL — the same thing teammateSeating,
  * petEntity and existingAgents do — and the invariants below are ones e2e

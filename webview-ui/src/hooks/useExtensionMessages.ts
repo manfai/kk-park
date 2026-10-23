@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { HooksConsentRequest } from '../../../core/src/messages.js';
+import type {
+  HooksConsentRequest,
+  ServerMessage,
+  SessionsLoaded,
+} from '../../../core/src/messages.js';
 import { playDoneSound, playPermissionSound, setSoundEnabled } from '../notificationSound.js';
 import type { ExistingAgentMeta, PendingAgent } from '../office/engine/existingAgents.js';
 import { reconcileExistingAgents } from '../office/engine/existingAgents.js';
@@ -23,7 +27,7 @@ import { isBrowserRuntime, isE2E } from '../runtime.js';
 import { transport } from '../transport/index.js';
 
 /**
- * A Headless agent is one the office adopted from outside (`claude -p`, a session
+ * A Headless agent is one the office adopted from outside (a non-interactive session
  * picked up by Watch All Sessions) and therefore has no terminal to focus. Its
  * character renders translucent so it reads as untouchable at a glance.
  *
@@ -87,7 +91,17 @@ export interface DirectorySaved {
   seq: number;
 }
 
+export interface SessionRejection {
+  id?: number;
+  reason: string;
+  seq: number;
+}
+
 interface ExtensionMessageState {
+  sessions: SessionsLoaded['sessions'] | null;
+  sessionRejection: SessionRejection | null;
+  sessionOpened: { id: number; seq: number } | null;
+  agentCharacterNames: Record<number, string>;
   agents: number[];
   selectedAgent: number | null;
   agentTools: Record<number, ToolActivity[]>;
@@ -122,10 +136,11 @@ interface ExtensionMessageState {
   ghostHeadlessAgents: boolean;
   setGhostHeadlessAgents: (v: boolean) => void;
   hooksEnabled: boolean;
+  providerId: string;
   setHooksEnabled: (v: boolean) => void;
   /** Actual install state per provider (hooksStatus messages) — absent/false
    *  while first-run consent is pending, unlike hooksEnabled which defaults
-   *  true. Keyed by providerId; today's Settings checkbox reads 'claude'. */
+   *  true. Settings reads the selected provider's entry. */
   hooksInstalled: Record<string, boolean>;
   /** Bumped per provider on every hooksStatus message. `hooksInstalled` alone cannot say "the server answered": a
    *  failed install re-reports the `false` already held, so no effect runs. The Intro needs the ARRIVAL to tell a
@@ -177,6 +192,10 @@ export function useExtensionMessages(
   onLayoutLoaded?: (layout: OfficeLayout) => void,
   isEditDirty?: () => boolean,
 ): ExtensionMessageState {
+  const [sessions, setSessions] = useState<SessionsLoaded['sessions'] | null>(null);
+  const [sessionRejection, setSessionRejection] = useState<SessionRejection | null>(null);
+  const [sessionOpened, setSessionOpened] = useState<{ id: number; seq: number } | null>(null);
+  const [agentCharacterNames, setAgentCharacterNames] = useState<Record<number, string>>({});
   const [agents, setAgents] = useState<number[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<number | null>(null);
   const [agentTools, setAgentTools] = useState<Record<number, ToolActivity[]>>({});
@@ -206,6 +225,7 @@ export function useExtensionMessages(
   const [alwaysShowLabels, setAlwaysShowLabels] = useState(false);
   const [ghostHeadlessAgents, setGhostHeadlessAgentsState] = useState(false);
   const [hooksEnabled, setHooksEnabled] = useState(true);
+  const [providerId, setProviderId] = useState('copilot');
   const [hooksInstalled, setHooksInstalled] = useState<Record<string, boolean>>({});
   const [hooksStatusSeq, setHooksStatusSeq] = useState<Record<string, number>>({});
   const [hooksInfoShown, setHooksInfoShown] = useState(true);
@@ -256,8 +276,7 @@ export function useExtensionMessages(
       setAgentDirectoryNames((prev) => (prev.includes(name) ? prev : [...prev, name]));
     };
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const handler = (msg: any) => {
+    const handler = (msg: ServerMessage) => {
       const os = getOfficeState();
       // CI / e2e diagnostic: record every received transport message on the
       // window-side log. The fixture reads window.__pixelAgentsTestHooks.
@@ -272,15 +291,16 @@ export function useExtensionMessages(
         window.__pixelAgentsTestHooks.messageLog.push({
           at: Date.now(),
           type: msg.type,
-          id: msg.id,
-          toolName: msg.toolName,
-          status: msg.status,
-          toolId: msg.toolId,
-          parentToolId: msg.parentToolId,
+          id: 'id' in msg ? msg.id : undefined,
+          toolName: 'toolName' in msg ? msg.toolName : undefined,
+          status: 'status' in msg ? msg.status : undefined,
+          toolId: 'toolId' in msg ? msg.toolId : undefined,
+          parentToolId: 'parentToolId' in msg ? msg.parentToolId : undefined,
         });
       }
 
       if (msg.type === 'providerCapabilities') {
+        setProviderId(typeof msg.providerId === 'string' ? msg.providerId : 'copilot');
         setProviderCapabilities({
           readingTools: msg.readingTools,
           subagentToolNames: msg.subagentToolNames,
@@ -290,6 +310,35 @@ export function useExtensionMessages(
 
       if (msg.type === 'officeAccess') {
         setOfficeReadOnly(msg.readOnly === true);
+        if (msg.readOnly) {
+          setSessions(null);
+          setSessionRejection(null);
+          setSessionOpened(null);
+        }
+        return;
+      }
+
+      if (msg.type === 'sessionsLoaded') {
+        setSessions(msg.sessions);
+        const names: Record<number, string> = {};
+        for (const session of msg.sessions) {
+          if (session.characterName) names[session.id] = session.characterName;
+        }
+        setAgentCharacterNames(names);
+        return;
+      }
+
+      if (msg.type === 'sessionActionRejected') {
+        setSessionRejection((previous) => ({
+          id: msg.id,
+          reason: msg.reason,
+          seq: (previous?.seq ?? 0) + 1,
+        }));
+        return;
+      }
+
+      if (msg.type === 'sessionOpened') {
+        setSessionOpened((previous) => ({ id: msg.id, seq: (previous?.seq ?? 0) + 1 }));
         return;
       }
 
@@ -332,6 +381,7 @@ export function useExtensionMessages(
         for (const p of pendingAgents) {
           os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.directoryName);
           if (p.isHeadless) os.setHeadless(p.id, true);
+          os.setAgentArchived(p.id, p.archived === true);
         }
         pendingAgents = [];
         layoutReadyRef.current = true;
@@ -344,14 +394,25 @@ export function useExtensionMessages(
         }
       } else if (msg.type === 'agentCreated') {
         const id = msg.id as number;
+        const characterName = msg.characterName;
+        if (characterName) {
+          setAgentCharacterNames((previous) => ({ ...previous, [id]: characterName }));
+        }
         const directoryName = msg.directoryName as string | undefined;
-        const isTeammate = msg.isTeammate as boolean | undefined;
-        const teammateName = msg.teammateName as string | undefined;
-        const teammateParentId = msg.parentAgentId as number | undefined;
-        const teamName = msg.teamName as string | undefined;
+        const isTeammate = 'isTeammate' in msg && msg.isTeammate === true;
+        const teammateName =
+          'teammateName' in msg && typeof msg.teammateName === 'string'
+            ? msg.teammateName
+            : undefined;
+        const teammateParentId =
+          'parentAgentId' in msg && typeof msg.parentAgentId === 'number'
+            ? msg.parentAgentId
+            : undefined;
+        const teamName =
+          'teamName' in msg && typeof msg.teamName === 'string' ? msg.teamName : undefined;
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]));
         // Don't auto-select teammates (keep focus on lead)
-        if (!isTeammate) {
+        if (!isTeammate && !msg.archived) {
           setSelectedAgent(id);
         }
         if (isTeammate && teammateParentId !== undefined) {
@@ -386,6 +447,14 @@ export function useExtensionMessages(
           if (isHeadlessAgent(msg.isExternal as boolean | undefined)) {
             os.setHeadless(id, true);
           }
+          os.setAgentArchived(id, msg.archived === true);
+          if (msg.archived) {
+            setAgentTools((previous) => omitKey(previous, id));
+            setAgentStatuses((previous) => omitKey(previous, id));
+            setAgentAwaitingInput((previous) => omitKey(previous, id));
+            setAgentSeenActivity((previous) => omitKey(previous, id));
+            setTerminalAgentIds((previous) => previous.filter((agentId) => agentId !== id));
+          }
         }
         saveAgentSeats(os);
       } else if (msg.type === 'agentClosed') {
@@ -400,6 +469,7 @@ export function useExtensionMessages(
         setAgentStatuses((prev) => omitKey(prev, id));
         setAgentAwaitingInput((prev) => omitKey(prev, id));
         setAgentSeenActivity((prev) => omitKey(prev, id));
+        setAgentCharacterNames((prev) => omitKey(prev, id));
         setSubagentTools((prev) => omitKey(prev, id));
         // Remove all sub-agent characters belonging to this agent
         delete backgroundParentToolIdsRef.current[id];
@@ -407,6 +477,7 @@ export function useExtensionMessages(
         setSubagentCharacters((prev) => prev.filter((s) => s.parentAgentId !== id));
         os.removeAgent(id);
       } else if (msg.type === 'existingAgents') {
+        setAgentCharacterNames(msg.characterNames ?? {});
         const incoming = msg.agents as number[];
         const meta = (msg.agentMeta || {}) as Record<number, ExistingAgentMeta>;
         const directoryNames = (msg.directoryNames || {}) as Record<number, string>;
@@ -467,14 +538,9 @@ export function useExtensionMessages(
         if (!permissionActive) {
           os.clearPermissionBubble(id);
         }
-        // Create sub-agent character for Task/Agent tool subtasks.
-        // agentToolStart for Task/Agent is always emitted via JSONL (with the stable
-        // toolu_* id), never from the hook path — handlePreToolUse skips these tools.
-        // runInBackground routing:
-        //   - parent HAS teamName: teammate path (onTeammateDetected) creates the
-        //     teammate; we skip here so we don't spawn a ghost sub-agent alongside.
-        //   - parent has NO teamName: no teammate path exists, so we must still
-        //     create the Subtask sub-character or the background task is invisible.
+        // Generic child-agent protocol support is dormant for Copilot CLI.
+        // Named team members have their own character; unnamed background
+        // tasks can use a Subtask character when the provider supports them.
         const runInBackground = msg.runInBackground as boolean | undefined;
         if (runInBackground) {
           const set = (backgroundParentToolIdsRef.current[id] ??= new Set());
@@ -628,8 +694,8 @@ export function useExtensionMessages(
           };
         });
         // Update sub-agent character's tool and active state. The sub-agent is
-        // usually created by an earlier agentToolStart from JSONL using the same
-        // (real) parentToolId. When it's missing — a teamed lead's background
+        // usually created by an earlier agentToolStart using the same
+        // parentToolId. When it's missing — a teamed lead's background
         // spawn (the creation gate above suppressed the Subtask) or a reloaded
         // panel that lost it — create it lazily; addSubagent is idempotent.
         let subId = os.getSubagentId(id, parentToolId);
@@ -640,7 +706,7 @@ export function useExtensionMessages(
             if (prev.some((s) => s.id === newSubId)) return prev;
             return [...prev, { id: newSubId, parentAgentId: id, parentToolId, label: '' }];
           });
-          // Only watched background spawns are created lazily -- mark the
+          // Background spawns are created lazily — mark the
           // parent tool as background so agentToolsClear preserves the sub.
           const set = (backgroundParentToolIdsRef.current[id] ??= new Set());
           set.add(parentToolId);
@@ -869,6 +935,10 @@ export function useExtensionMessages(
 
   return {
     agents,
+    sessions,
+    sessionRejection,
+    sessionOpened,
+    agentCharacterNames,
     selectedAgent,
     agentTools,
     agentStatuses,
@@ -894,6 +964,7 @@ export function useExtensionMessages(
     setGhostHeadlessAgents: applyGhostHeadlessAgents,
     hooksEnabled,
     hooksInstalled,
+    providerId,
     hooksStatusSeq,
     setHooksEnabled,
     hooksInfoShown,

@@ -111,7 +111,7 @@ async function verifyInstalledTarball(tarballPath) {
   fs.mkdirSync(path.join(smokeHome, '.pixel-agents'), { recursive: true });
   fs.writeFileSync(
     path.join(smokeHome, '.pixel-agents', 'config.json'),
-    JSON.stringify({ hooksConsent: { claude: 'granted' } }),
+    JSON.stringify({ hooksConsent: { copilot: 'granted' } }),
   );
   fs.writeFileSync(
     path.join(smokeProject, 'package.json'),
@@ -147,7 +147,12 @@ async function verifyInstalledTarball(tarballPath) {
     );
     const help = await execFileAsync(installedBin, ['--help'], {
       cwd: smokeProject,
-      env: { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome },
+      env: {
+        ...process.env,
+        HOME: smokeHome,
+        USERPROFILE: smokeHome,
+        COPILOT_HOME: path.join(smokeHome, '.copilot'),
+      },
       shell: process.platform === 'win32',
     });
     if (!help.stdout.includes('Usage: pixel-agents')) {
@@ -160,7 +165,12 @@ async function verifyInstalledTarball(tarballPath) {
       [installedCli, '--port', port.toString(), '--host', '127.0.0.1'],
       {
         cwd: smokeProject,
-        env: { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome },
+        env: {
+          ...process.env,
+          HOME: smokeHome,
+          USERPROFILE: smokeHome,
+          COPILOT_HOME: path.join(smokeHome, '.copilot'),
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
@@ -201,20 +211,20 @@ async function verifyInstalledTarball(tarballPath) {
       throw new Error(`Installed package did not load non-empty bundled assets:\n${output}`);
     }
 
-    const installedHook = path.join(smokeHome, '.pixel-agents', 'hooks', 'claude-hook.js');
-    const settingsPath = path.join(smokeHome, '.claude', 'settings.json');
+    const installedHook = path.join(smokeHome, '.pixel-agents', 'hooks', 'copilot-hook.js');
+    const settingsPath = path.join(smokeHome, '.copilot', 'hooks', 'pixel-agents.json');
     await waitFor(
       () => fs.existsSync(installedHook) && fs.existsSync(settingsPath),
       'default Hook ON installation',
     );
-    if (process.platform !== 'win32' && (fs.statSync(installedHook).mode & 0o100) === 0) {
-      throw new Error('Installed Claude hook script is not owner-executable');
+    if (process.platform !== 'win32' && (fs.statSync(settingsPath).mode & 0o077) !== 0) {
+      throw new Error('Installed Copilot hook configuration is not private');
     }
     const settingsText = fs.readFileSync(settingsPath, 'utf-8');
     const normalizedSettings = settingsText.replaceAll('\\\\', '/');
     const normalizedHookPath = installedHook.replaceAll(path.sep, '/');
     if (!normalizedSettings.includes(normalizedHookPath)) {
-      throw new Error('Claude hook settings do not reference the installed hook script');
+      throw new Error('Copilot hook configuration does not reference the installed hook script');
     }
 
     return { assetCounts: counts.slice(1).map(Number), port };

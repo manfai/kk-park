@@ -1,9 +1,9 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentRuntime } from '../src/agentRuntime.js';
+import { createAgentState } from '../src/agentState.js';
 import { AgentStateStore } from '../src/agentStateStore.js';
 import {
   type AssetCache,
@@ -13,11 +13,12 @@ import {
 import { getHooksEnabled, readConfig, setHooksEnabled } from '../src/configPersistence.js';
 import { TERMINAL_REQUIRES_TOKEN_REASON } from '../src/constants.js';
 import { FileStateAdapter } from '../src/fileStateAdapter.js';
-import { claudeProvider } from '../src/providers/hook/claude/claude.js';
-import { CLAUDE_HOOK_EVENTS } from '../src/providers/hook/claude/constants.js';
+import { copilotProvider } from '../src/providers/hook/copilot/copilot.js';
 import type { IPty, PtyModule } from '../src/terminal/ptyModule.js';
 import { PtySessionManager } from '../src/terminal/ptySessionManager.js';
 import type { AgentState } from '../src/types.js';
+import { seedCopilotHooks } from './testSupport.js';
+import { isolateHome, newTestDirectory } from './testSupport.js';
 
 /** Let the setHooksEnabled dispatch's async chain (side effect →
  *  areHooksInstalled → persist → send) run to completion. */
@@ -26,32 +27,14 @@ function settle(): Promise<void> {
 }
 
 function createTestAgent(overrides: Partial<AgentState> = {}): AgentState {
-  return {
+  return createAgentState({
     id: 1,
     sessionId: 'sess-1',
-    terminalRef: undefined,
-    isExternal: false,
+    characterName: 'Test character',
     projectDir: '/test',
-    jsonlFile: '/test/session.jsonl',
-    fileOffset: 0,
-    lineBuffer: '',
-    activeToolIds: new Set(),
-    activeToolStatuses: new Map(),
-    activeToolNames: new Map(),
-    activeSubagentToolIds: new Map(),
-    activeSubagentToolNames: new Map(),
-    backgroundAgentToolIds: new Set(),
-    isWaiting: false,
-    permissionSent: false,
-    hadToolsInTurn: false,
-    lastDataAt: 0,
-    linesProcessed: 0,
-    seenUnknownRecordTypes: new Set(),
-    hookDelivered: false,
-    contextTokens: 0,
-    maxContextTokens: 200_000,
+    isExternal: false,
     ...overrides,
-  } as AgentState;
+  });
 }
 
 /**
@@ -62,7 +45,6 @@ function createTestAgent(overrides: Partial<AgentState> = {}): AgentState {
  */
 describe('clientMessageHandler: areas + carpet wire ordering', () => {
   let tempHome: string;
-  let originalHome: string | undefined;
   let store: AgentStateStore;
   let sent: Array<Record<string, unknown>>;
   let ctx: ClientMessageContext;
@@ -74,9 +56,8 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
   }
 
   beforeEach(() => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-test-'));
-    originalHome = process.env.HOME;
-    process.env.HOME = tempHome;
+    tempHome = newTestDirectory('pxl-cmh-test-');
+    isolateHome(tempHome);
 
     store = new AgentStateStore();
     store.setAdapter(new FileStateAdapter({ namespace: 'standalone' }));
@@ -85,11 +66,7 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
   });
 
   afterEach(() => {
-    if (originalHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = originalHome;
-    }
+    vi.unstubAllEnvs();
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
@@ -156,13 +133,13 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
   // ── hooksStatus (actual install state, not the hooksEnabled setting) ──
 
   describe('hooksStatus', () => {
-    it('webviewReady reports installed: false when no hooks are in settings.json', async () => {
+    it('webviewReady reports installed: false when no hooks are in pixel-agents.json', async () => {
       handleClientMessage({ type: 'webviewReady' }, (m) => sent.push(m), ctx);
       // The provider check is async; the message lands after the sync handshake.
       await new Promise((r) => setTimeout(r, 0));
 
       const status = sent.find((m) => m.type === 'hooksStatus');
-      expect(status).toEqual({ type: 'hooksStatus', providerId: 'claude', installed: false });
+      expect(status).toEqual({ type: 'hooksStatus', providerId: 'copilot', installed: false });
     });
 
     it('setHooksEnabled reports the actual outcome after the side effect settles', async () => {
@@ -172,7 +149,7 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
         sideEffectRan = true;
       };
       handleClientMessage(
-        { type: 'setHooksEnabled', providerId: 'claude', enabled: true },
+        { type: 'setHooksEnabled', providerId: 'copilot', enabled: true },
         (m) => sent.push(m),
         ctx,
       );
@@ -182,7 +159,7 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
       // The side effect installed nothing (stub), so the truthful answer is false
       // even though the user just toggled the setting ON.
       const status = sent.find((m) => m.type === 'hooksStatus');
-      expect(status).toEqual({ type: 'hooksStatus', providerId: 'claude', installed: false });
+      expect(status).toEqual({ type: 'hooksStatus', providerId: 'copilot', installed: false });
     });
   });
 
@@ -191,15 +168,7 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
   describe('setHooksEnabled persistence', () => {
     /** Put our command on every installed event, as a real install would. */
     function seedInstalledHooks(): void {
-      const command = `node "${path.join(tempHome, '.pixel-agents', 'hooks', 'claude-hook.js')}"`;
-      const entry = { matcher: '', hooks: [{ type: 'command', command, timeout: 5 }] };
-      fs.mkdirSync(path.join(tempHome, '.claude'), { recursive: true });
-      fs.writeFileSync(
-        path.join(tempHome, '.claude', 'settings.json'),
-        JSON.stringify({
-          hooks: Object.fromEntries(CLAUDE_HOOK_EVENTS.map((e) => [e, [entry]])),
-        }),
-      );
+      seedCopilotHooks(tempHome);
     }
 
     // THE stranding bug: the preference was written BEFORE the uninstall, so a
@@ -210,11 +179,11 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
       seedInstalledHooks();
       ctx.privileged = true;
       ctx.onSetHooksEnabled = () => {
-        /* the uninstall failed: settings.json still carries our entries */
+        /* the uninstall failed: pixel-agents.json still carries our entries */
       };
 
       handleClientMessage(
-        { type: 'setHooksEnabled', providerId: 'claude', enabled: false },
+        { type: 'setHooksEnabled', providerId: 'copilot', enabled: false },
         (m) => sent.push(m),
         ctx,
       );
@@ -222,31 +191,31 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
 
       // The preference still says ON, so the next startup re-runs the install
       // path and the user keeps a way to turn hooks off.
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksEnabled('copilot')).toBe(true);
       // ...and the checkbox is told the truth: they are still installed.
       expect(sent.find((m) => m.type === 'hooksStatus')).toEqual({
         type: 'hooksStatus',
-        providerId: 'claude',
+        providerId: 'copilot',
         installed: true,
       });
     });
 
     // The mirror case: an install that did not happen must not persist ON.
     it('does not persist hooks-on when the install failed', async () => {
-      setHooksEnabled('claude', false);
+      setHooksEnabled('copilot', false);
       ctx.privileged = true;
       ctx.onSetHooksEnabled = () => {
-        /* the install failed: settings.json stays empty */
+        /* the install failed: pixel-agents.json stays empty */
       };
 
       handleClientMessage(
-        { type: 'setHooksEnabled', providerId: 'claude', enabled: true },
+        { type: 'setHooksEnabled', providerId: 'copilot', enabled: true },
         (m) => sent.push(m),
         ctx,
       );
       await settle();
 
-      expect(getHooksEnabled('claude')).toBe(false);
+      expect(getHooksEnabled('copilot')).toBe(false);
     });
 
     // The happy path still persists, or the toggle would do nothing at all.
@@ -255,22 +224,22 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
       ctx.onSetHooksEnabled = () => seedInstalledHooks();
 
       handleClientMessage(
-        { type: 'setHooksEnabled', providerId: 'claude', enabled: true },
+        { type: 'setHooksEnabled', providerId: 'copilot', enabled: true },
         (m) => sent.push(m),
         ctx,
       );
       await settle();
 
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksEnabled('copilot')).toBe(true);
       expect(sent.find((m) => m.type === 'hooksStatus')).toEqual({
         type: 'hooksStatus',
-        providerId: 'claude',
+        providerId: 'copilot',
         installed: true,
       });
     });
 
     // A non-local client (LAN peer, rebound page) never reaches the side effect
-    // at all: granting consent to modify ~/.claude/settings.json is not a
+    // at all: granting consent to modify ~/.copilot/hooks/pixel-agents.json is not a
     // decision a remote peer gets to make. See httpServerWs.test.ts.
     it('ignores the toggle entirely when the client is not privileged', async () => {
       let sideEffectRan = false;
@@ -280,19 +249,19 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
       };
 
       handleClientMessage(
-        { type: 'setHooksEnabled', providerId: 'claude', enabled: true },
+        { type: 'setHooksEnabled', providerId: 'copilot', enabled: true },
         (m) => sent.push(m),
         ctx,
       );
       await settle();
 
       expect(sideEffectRan).toBe(false);
-      expect(getHooksEnabled('claude')).toBe(true);
+      expect(getHooksEnabled('copilot')).toBe(true);
       // It still hears the truth, so a LAN viewer's checkbox shows reality
       // rather than appearing to have worked.
       expect(sent.find((m) => m.type === 'hooksStatus')).toEqual({
         type: 'hooksStatus',
-        providerId: 'claude',
+        providerId: 'copilot',
         installed: false,
       });
     });
@@ -431,7 +400,6 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
 
 describe('clientMessageHandler: saveAgentSeats palette sync', () => {
   let tempHome: string;
-  let originalHome: string | undefined;
   let store: AgentStateStore;
   let sent: Array<Record<string, unknown>>;
   let ctx: ClientMessageContext;
@@ -443,9 +411,8 @@ describe('clientMessageHandler: saveAgentSeats palette sync', () => {
   }
 
   beforeEach(() => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-seats-'));
-    originalHome = process.env.HOME;
-    process.env.HOME = tempHome;
+    tempHome = newTestDirectory('pxl-cmh-seats-');
+    isolateHome(tempHome);
 
     store = new AgentStateStore();
     store.setAdapter(new FileStateAdapter({ namespace: 'standalone' }));
@@ -454,11 +421,7 @@ describe('clientMessageHandler: saveAgentSeats palette sync', () => {
   });
 
   afterEach(() => {
-    if (originalHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = originalHome;
-    }
+    vi.unstubAllEnvs();
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
@@ -623,7 +586,6 @@ describe('clientMessageHandler: saveAgentSeats palette sync', () => {
  */
 describe('clientMessageHandler: standalone terminal control plane', () => {
   let tempHome: string;
-  let originalHome: string | undefined;
   let store: AgentStateStore;
   let runtime: AgentRuntime;
   let sent: Array<Record<string, unknown>>;
@@ -662,32 +624,15 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
 
   /** Minimal store agent; only identity fields matter to the control plane. */
   function makeAgent(id: number): AgentState {
-    return {
+    return createAgentState({
       id,
       sessionId: `session-${id}`,
-      terminalRef: undefined,
+      characterName: `Character ${id}`,
+      connected: true,
+      terminalAgentId: id,
       isExternal: false,
-      projectDir: path.join(tempHome, 'nowhere'),
-      jsonlFile: path.join(tempHome, 'nowhere', `session-${id}.jsonl`),
-      fileOffset: 0,
-      lineBuffer: '',
-      activeToolIds: new Set(),
-      activeToolStatuses: new Map(),
-      activeToolNames: new Map(),
-      activeSubagentToolIds: new Map(),
-      activeSubagentToolNames: new Map(),
-      backgroundAgentToolIds: new Set(),
-      isWaiting: false,
-      permissionSent: false,
-      hadToolsInTurn: false,
-      lastDataAt: 0,
-      linesProcessed: 0,
-      seenUnknownRecordTypes: new Set(),
-      hookDelivered: false,
-      contextTokens: 0,
-      maxContextTokens: 200_000,
-      providerId: 'claude',
-    };
+      projectDir: tempHome,
+    });
   }
 
   /** Tokened connection by default -- the terminal is a privileged surface, so
@@ -702,25 +647,20 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
   }
 
   beforeEach(() => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-term-test-'));
-    originalHome = process.env.HOME;
-    process.env.HOME = tempHome;
+    tempHome = newTestDirectory('pxl-cmh-term-test-');
+    isolateHome(tempHome);
 
     store = new AgentStateStore();
     store.setAdapter(new FileStateAdapter({ namespace: 'standalone' }));
-    runtime = new AgentRuntime(store, claudeProvider);
+    runtime = new AgentRuntime(store, copilotProvider);
     sent = [];
     broadcasts = [];
     store.on('broadcast', (message) => broadcasts.push(message));
   });
 
   afterEach(() => {
-    if (originalHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = originalHome;
-    }
     runtime.dispose();
+    vi.unstubAllEnvs();
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
@@ -758,7 +698,7 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
   it('webviewReady tells an untokened client the terminal is unavailable, and why', () => {
     const { manager } = workingPtyManager();
     store.set(1, makeAgent(1));
-    manager.create({ agentId: 1, command: 'claude', args: [], cwd: tempHome });
+    manager.create({ agentId: 1, command: 'copilot', args: [], cwd: tempHome });
 
     dispatch({ type: 'webviewReady' }, ctx({ ptyManager: manager, privileged: false }));
 
@@ -787,7 +727,7 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
     const { manager } = workingPtyManager();
     store.set(1, makeAgent(1));
     store.set(2, makeAgent(2));
-    manager.create({ agentId: 1, command: 'claude', args: [], cwd: tempHome });
+    manager.create({ agentId: 1, command: 'copilot', args: [], cwd: tempHome });
 
     dispatch({ type: 'webviewReady' }, ctx({ ptyManager: manager }));
 
@@ -799,7 +739,7 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
 
   // ── launchAgent ──────────────────────────────────────────────
 
-  it('launchAgent spawns a PTY-backed agent and announces its terminal', () => {
+  it('launchAgent stays archived until a local character name is assigned', () => {
     const { manager } = workingPtyManager();
 
     dispatch({ type: 'launchAgent' }, ctx({ runtime, ptyManager: manager }));
@@ -807,6 +747,11 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
     expect(store.size).toBe(1);
     const id = [...store][0][0];
     expect(manager.has(id)).toBe(true);
+    expect(broadcasts).not.toContainEqual({ type: 'terminalSessionOpened', agentId: id });
+    dispatch(
+      { type: 'setSessionCharacterName', id, name: 'Coder' },
+      ctx({ runtime, ptyManager: manager }),
+    );
     expect(broadcasts).toContainEqual({ type: 'terminalSessionOpened', agentId: id });
   });
 
@@ -828,12 +773,12 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
       { type: 'launchAgent', bypassPermissions: true },
       ctx({ runtime, ptyManager: manager }),
     );
-    expect(spawnArgs[0]).not.toContain('--dangerously-skip-permissions');
+    expect(spawnArgs[0]).not.toContain('--allow-all-tools');
 
     // Posture on: every launch gets the flag without the client saying so.
     dispatch({ type: 'setBypassPermissions', enabled: true }, ctx());
     dispatch({ type: 'launchAgent' }, ctx({ runtime, ptyManager: manager }));
-    expect(spawnArgs[1]).toContain('--dangerously-skip-permissions');
+    expect(spawnArgs[1]).toContain('--allow-all-tools');
   });
 
   it('setBypassPermissions persists via the adapter (standalone namespace)', () => {
@@ -861,7 +806,7 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
     // flips the posture, and the operator's NEXT launch from a tokened tab runs
     // with --dangerously-skip-permissions.
     const { manager, spawnArgs } = workingPtyManager();
-    const runtime = new AgentRuntime(store, claudeProvider);
+    const runtime = new AgentRuntime(store, copilotProvider);
 
     dispatch({ type: 'setBypassPermissions', enabled: true }, ctx({ privileged: false }));
 
@@ -1085,7 +1030,7 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
 
   it('launchAgent with a directoryPath labels the agent with its Directory name', () => {
     const { manager, spawned } = workingPtyManager();
-    const target = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-launch-dir-')));
+    const target = fs.realpathSync(newTestDirectory('pxl-launch-dir-'));
     try {
       dispatch(
         { type: 'saveDirectory', name: 'Side Project', path: target },
@@ -1126,22 +1071,46 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
 
   // ── closeAgent ───────────────────────────────────────────────
 
-  it('closeAgent kills the PTY and removes the agent', () => {
+  it('archiving stops the session binding, never a different PTY with the same numeric character ID', async () => {
+    const { manager, spawned } = workingPtyManager();
+    const first = makeAgent(5);
+    first.terminalAgentId = 9;
+    const second = makeAgent(6);
+    second.terminalAgentId = 5;
+    store.set(5, first);
+    store.set(6, second);
+    manager.create({ agentId: 9, command: 'copilot', args: [], cwd: tempHome });
+    manager.create({ agentId: 5, command: 'copilot', args: [], cwd: tempHome });
+    dispatch(
+      { type: 'setSessionArchived', id: 5, archived: true },
+      ctx({ runtime, ptyManager: manager }),
+    );
+    await vi.waitFor(() => expect(first.connected).toBe(false));
+    expect(first.archived).toBe(true);
+    expect(first.characterName).toBe('Character 5');
+    expect(spawned[0].killSignals.length).toBeGreaterThan(0);
+    expect(spawned[1].killSignals).toHaveLength(0);
+    expect(manager.has(5)).toBe(true);
+    expect(second.connected).toBe(true);
+  });
+
+  it('closeAgent kills the PTY but preserves the session offline', () => {
     const { manager, spawned } = workingPtyManager();
     store.set(5, makeAgent(5));
-    manager.create({ agentId: 5, command: 'claude', args: [], cwd: tempHome });
+    manager.create({ agentId: 5, command: 'copilot', args: [], cwd: tempHome });
 
     dispatch({ type: 'closeAgent', id: 5 }, ctx({ runtime, ptyManager: manager }));
 
     expect(spawned[0].killSignals.length).toBeGreaterThan(0);
     expect(manager.has(5)).toBe(false);
-    expect(store.has(5)).toBe(false);
+    expect(store.has(5)).toBe(true);
+    expect(store.get(5)?.connected).toBe(false);
   });
 
   it('closeAgent from an untokened client leaves a PTY-backed agent running', () => {
     const { manager, spawned } = workingPtyManager();
     store.set(5, makeAgent(5));
-    manager.create({ agentId: 5, command: 'claude', args: [], cwd: tempHome });
+    manager.create({ agentId: 5, command: 'copilot', args: [], cwd: tempHome });
 
     dispatch(
       { type: 'closeAgent', id: 5 },
@@ -1153,19 +1122,7 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
     expect(store.has(5)).toBe(true);
   });
 
-  it("closeAgent takes the Lead's teammates with it", () => {
-    const { manager } = workingPtyManager();
-    store.set(5, { ...makeAgent(5), isTeamLead: true });
-    store.set(6, { ...makeAgent(6), leadAgentId: 5, agentName: 'review-helper' });
-    manager.create({ agentId: 5, command: 'claude', args: [], cwd: tempHome });
-
-    dispatch({ type: 'closeAgent', id: 5 }, ctx({ runtime, ptyManager: manager }));
-
-    expect(store.has(5)).toBe(false);
-    expect(store.has(6)).toBe(false);
-  });
-
-  it('closeAgent removes an observed agent that has no PTY', () => {
+  it('closeAgent disconnects an observed session without deleting its identity', () => {
     store.set(7, makeAgent(7));
 
     dispatch(
@@ -1173,7 +1130,8 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
       ctx({ runtime, ptyManager: workingPtyManager().manager }),
     );
 
-    expect(store.has(7)).toBe(false);
+    expect(store.has(7)).toBe(true);
+    expect(store.get(7)?.connected).toBe(false);
   });
 });
 
@@ -1185,21 +1143,20 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
  */
 describe('clientMessageHandler: read-only (untokened) clients', () => {
   let tempHome: string;
-  let originalHome: string | undefined;
   let store: AgentStateStore;
   let sent: Array<Record<string, unknown>>;
 
   beforeEach(() => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-readonly-'));
-    originalHome = process.env.HOME;
-    process.env.HOME = tempHome;
+    tempHome = newTestDirectory('pxl-cmh-readonly-');
+    isolateHome(tempHome);
     store = new AgentStateStore();
     store.setAdapter(new FileStateAdapter({ namespace: 'standalone' }));
     sent = [];
   });
 
   afterEach(() => {
-    process.env.HOME = originalHome;
+    vi.unstubAllEnvs();
+    store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
 
@@ -1243,8 +1200,8 @@ describe('clientMessageHandler: read-only (untokened) clients', () => {
       { type: 'setAlwaysShowLabels', enabled: true },
       { type: 'setGhostHeadlessAgents', enabled: true },
       { type: 'setWatchAllSessions', enabled: true },
-      { type: 'setHooksEnabled', providerId: 'claude', enabled: false },
-      { type: 'hooksConsentResponse', providerId: 'claude', choice: 'allow' },
+      { type: 'setHooksEnabled', providerId: 'copilot', enabled: false },
+      { type: 'hooksConsentResponse', providerId: 'copilot', choice: 'allow' },
       { type: 'setHooksInfoShown' },
       { type: 'addExternalAssetDirectory', path: directory },
       { type: 'removeExternalAssetDirectory', path: directory },

@@ -1,5 +1,6 @@
 import { pickDiversePalette } from '../../../../core/src/paletteUtils.js';
 import {
+  ARCHIVE_CAGE_TYPE,
   AUTO_ON_FACING_DEPTH,
   AUTO_ON_SIDE_DEPTH,
   CHARACTER_HIT_HALF_WIDTH,
@@ -24,7 +25,7 @@ import {
   layoutToSeats,
   layoutToTileMap,
 } from '../layout/layoutSerializer.js';
-import { findPath, getWalkableTiles, isWalkable } from '../layout/tileMap.js';
+import { findNearestPath, findPath, getWalkableTiles, isWalkable } from '../layout/tileMap.js';
 import { getPetCount, getPetName } from '../sprites/petSpriteData.js';
 import { getLoadedCharacterCount } from '../sprites/spriteData.js';
 import type {
@@ -174,6 +175,7 @@ export class OfficeState {
 
     // First pass: try to keep characters at their existing seats
     for (const ch of this.characters.values()) {
+      if (ch.isArchived) continue;
       if (ch.seatId && this.seats.has(ch.seatId)) {
         const seat = this.seats.get(ch.seatId)!;
         if (!seat.assigned) {
@@ -194,6 +196,7 @@ export class OfficeState {
 
     // Second pass: assign remaining characters to free seats
     for (const ch of this.characters.values()) {
+      if (ch.isArchived) continue;
       if (ch.seatId) continue;
       const seatId = this.findFreeSeat(ch.directoryName);
       if (seatId) {
@@ -219,6 +222,7 @@ export class OfficeState {
       ) {
         this.relocateCharacterToWalkable(ch);
       }
+      if (ch.isArchived) this.parkArchivedCharacter(ch);
     }
 
     // Relocate any pets that ended up outside bounds or on non-walkable tiles
@@ -447,7 +451,16 @@ export class OfficeState {
     directoryName?: string,
     nearAgentId?: number,
   ): void {
-    if (this.characters.has(id)) return;
+    const existing = this.characters.get(id);
+    if (existing?.matrixEffect === 'despawn') {
+      // A session can be named again before its archive animation finishes.
+      preferredPalette ??= existing.palette;
+      preferredHueShift ??= existing.hueShift;
+      preferredSeatId ??= existing.seatId ?? undefined;
+      this.characters.delete(id);
+    } else if (existing) {
+      return;
+    }
 
     let palette: number;
     let hueShift: number;
@@ -508,6 +521,133 @@ export class OfficeState {
       startMatrixEffect(ch, 'spawn');
     }
     this.characters.set(id, ch);
+  }
+
+  archivePath(id: number): Array<{ col: number; row: number }> | null {
+    return this.archiveDestination(id)?.path ?? null;
+  }
+
+  private archiveDestination(id: number): {
+    cageId: string;
+    position: { x: number; y: number };
+    path: Array<{ col: number; row: number }>;
+  } | null {
+    const ch = this.characters.get(id);
+    if (!ch) return null;
+    let nearest: ReturnType<OfficeState['archiveDestination']> = null;
+    for (const cage of this.layout.furniture) {
+      if (cage.type !== ARCHIVE_CAGE_TYPE) continue;
+      const entry = getCatalogEntry(cage.type);
+      if (!entry) continue;
+      const contains = (col: number, row: number) =>
+        col >= cage.col &&
+        col < cage.col + entry.footprintW &&
+        row >= cage.row &&
+        row < cage.row + entry.footprintH;
+      const occupied = [...this.characters.values()].some((other) => {
+        if (other.id === id || other.matrixEffect === 'despawn') return false;
+        const destination = other.path[other.path.length - 1];
+        return (
+          other.archiveCageId === cage.uid ||
+          contains(other.tileCol, other.tileRow) ||
+          (destination && contains(destination.col, destination.row))
+        );
+      });
+      if (occupied) continue;
+
+      // Only the selected cage (and the character's old cage when leaving) opens for this route.
+      const blocked = getBlockedTiles(
+        this.layout.furniture.filter(
+          (item) => item.uid !== cage.uid && item.uid !== ch.archiveCageId,
+        ),
+      );
+      const col = cage.col + Math.floor((entry.footprintW - 1) / 2);
+      const row = cage.row + entry.footprintH - 1;
+      if (!isWalkable(col, row, this.tileMap, blocked)) continue;
+      const path = findNearestPath(
+        ch.tileCol,
+        ch.tileRow,
+        this.tileMap,
+        blocked,
+        new Set([`${col},${row}`]),
+      );
+      if (path === null || (nearest && nearest.path.length <= path.length)) continue;
+      nearest = {
+        cageId: cage.uid,
+        position: {
+          x: (cage.col + entry.footprintW / 2) * TILE_SIZE,
+          y: row * TILE_SIZE + TILE_SIZE / 2,
+        },
+        path,
+      };
+    }
+    return nearest;
+  }
+
+  private parkArchivedCharacter(ch: Character): void {
+    const destination = this.archiveDestination(ch.id);
+    const path = destination?.path;
+    ch.archiveCageId = destination?.cageId;
+    ch.archivePosition = destination?.position;
+    ch.path = path ?? [];
+    ch.moveProgress = 0;
+    ch.state = path?.length ? CharacterState.WALK : CharacterState.IDLE;
+    ch.isActive = false;
+    ch.currentTool = null;
+    ch.bubbleType = null;
+    ch.seatTimer = 0;
+    ch.frame = 0;
+    ch.frameTimer = 0;
+    ch.x = ch.tileCol * TILE_SIZE + TILE_SIZE / 2;
+    ch.y = ch.tileRow * TILE_SIZE + TILE_SIZE / 2;
+    ch.archiveParkingError = !destination
+      ? 'No reachable free Jail Cage. Place an empty cage in Layout > Furniture > Decor.'
+      : undefined;
+    if (!destination)
+      console.warn(
+        `[Pixel Agents] Cannot confine archived character ${ch.id}: no reachable free Jail Cage.`,
+      );
+  }
+
+  setAgentArchived(id: number, archived: boolean): void {
+    const ch = this.characters.get(id);
+    if (!ch || !!ch.isArchived === archived) return;
+    ch.isArchived = archived;
+    if (archived) {
+      ch.archivedSeatId = ch.seatId;
+      if (ch.seatId) {
+        const seat = this.seats.get(ch.seatId);
+        if (seat) seat.assigned = false;
+      }
+      ch.seatId = null;
+      this.parkArchivedCharacter(ch);
+    } else {
+      ch.archiveParkingError = undefined;
+      ch.path = [];
+      ch.moveProgress = 0;
+      ch.state = CharacterState.IDLE;
+      if (
+        ch.archiveCageId &&
+        !isWalkable(ch.tileCol, ch.tileRow, this.tileMap, this.blockedTiles)
+      ) {
+        const exit = this.closestFreeWalkableTile(ch.tileCol, ch.tileRow);
+        if (exit) {
+          ch.tileCol = exit.col;
+          ch.tileRow = exit.row;
+          ch.x = exit.col * TILE_SIZE + TILE_SIZE / 2;
+          ch.y = exit.row * TILE_SIZE + TILE_SIZE / 2;
+        } else {
+          console.warn(`[Pixel Agents] Cannot release character ${id}: no free office tile.`);
+        }
+      }
+      const preferred = ch.archivedSeatId && this.seats.get(ch.archivedSeatId);
+      const seatId =
+        preferred && !preferred.assigned ? ch.archivedSeatId : this.findFreeSeat(ch.directoryName);
+      ch.archivedSeatId = undefined;
+      ch.archiveCageId = undefined;
+      ch.archivePosition = undefined;
+      if (seatId) this.reassignSeat(id, seatId);
+    }
   }
 
   // ── Greeter ───────────────────────────────────────────────────
@@ -613,7 +753,7 @@ export class OfficeState {
   /** Reassign an agent from their current seat to a new seat */
   reassignSeat(agentId: number, seatId: string): void {
     const ch = this.characters.get(agentId);
-    if (!ch) return;
+    if (!ch || ch.isArchived) return;
     // Unassign old seat
     if (ch.seatId) {
       const old = this.seats.get(ch.seatId);
@@ -677,7 +817,7 @@ export class OfficeState {
   /** Send an agent back to their currently assigned seat */
   sendToSeat(agentId: number): void {
     const ch = this.characters.get(agentId);
-    if (!ch || !ch.seatId) return;
+    if (!ch || ch.isArchived || !ch.seatId) return;
     const seat = this.seats.get(ch.seatId);
     if (!seat) return;
     const path = this.withOwnSeatUnblocked(ch, () =>
@@ -704,7 +844,7 @@ export class OfficeState {
   /** Walk an agent to an arbitrary walkable tile (right-click command) */
   walkToTile(agentId: number, col: number, row: number): boolean {
     const ch = this.characters.get(agentId);
-    if (!ch || ch.isSubagent) return false;
+    if (!ch || ch.isSubagent || ch.isArchived) return false;
     if (!isWalkable(col, row, this.tileMap, this.blockedTiles)) {
       // Also allow walking to own seat tile (blocked for others but not self)
       const key = this.ownSeatKey(ch);
@@ -826,7 +966,7 @@ export class OfficeState {
 
   setAgentActive(id: number, active: boolean): void {
     const ch = this.characters.get(id);
-    if (ch) {
+    if (ch && !ch.isArchived) {
       ch.isActive = active;
       if (!active) {
         // Sentinel -1: signals turn just ended, skip next seat rest timer.
@@ -909,14 +1049,14 @@ export class OfficeState {
 
   setAgentTool(id: number, tool: string | null): void {
     const ch = this.characters.get(id);
-    if (ch) {
+    if (ch && !ch.isArchived) {
       ch.currentTool = tool;
     }
   }
 
   showPermissionBubble(id: number): void {
     const ch = this.characters.get(id);
-    if (ch) {
+    if (ch && !ch.isArchived) {
       ch.bubbleType = 'permission';
       ch.bubbleTimer = 0;
     }
@@ -932,7 +1072,7 @@ export class OfficeState {
 
   showWaitingBubble(id: number, awaitingInput = false): void {
     const ch = this.characters.get(id);
-    if (ch) {
+    if (ch && !ch.isArchived) {
       ch.bubbleType = 'waiting';
       ch.waitingAwaitingInput = awaitingInput;
       ch.bubbleTimer = WAITING_BUBBLE_DURATION_SEC;
@@ -1190,7 +1330,11 @@ export class OfficeState {
     const seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {};
     for (const ch of this.characters.values()) {
       if (ch.isSubagent) continue;
-      seats[ch.id] = { palette: ch.palette, hueShift: ch.hueShift, seatId: ch.seatId };
+      seats[ch.id] = {
+        palette: ch.palette,
+        hueShift: ch.hueShift,
+        seatId: ch.isArchived ? (ch.archivedSeatId ?? null) : ch.seatId,
+      };
     }
     return seats;
   }

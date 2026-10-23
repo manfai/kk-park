@@ -1,9 +1,8 @@
-import path from 'node:path';
-
 import type { Page } from '@playwright/test';
 
 import { expect, test } from '../../fixtures/standalone';
-import { arrangeNextClaudeInvocation, claudeScenario } from '../../helpers/mock-claude';
+import { arrangeNextCopilotInvocation, copilotScenario } from '../../helpers/mock-copilot';
+import { launchNamedSession } from '../../helpers/sessions';
 
 /**
  * The standalone mobile shell on a phone-sized touch viewport: office and
@@ -14,16 +13,15 @@ import { arrangeNextClaudeInvocation, claudeScenario } from '../../helpers/mock-
  * hasTouch) — except the edge swipe, which needs a multi-step drag that
  * Playwright's touchscreen API can't express; that one dispatches the same
  * TouchEvent sequence a finger produces (`swipe` below). The terminal is the
- * real PTY running the mock claude (e2e/README.md "Mocking model & rules").
+ * real PTY running the mock copilot (e2e/README.md "Mocking model & rules").
  */
 
 const PHONE = { width: 390, height: 844 };
 
-/** The + card opens the launch drawer; the launch itself is a tap on the
- *  host-contributed Directory (the workspace the server started in). */
+/** The + card opens Sessions; a named session is then opened explicitly. */
 async function launchFromCard(page: Page, workspaceDir: string) {
-  await page.getByTitle('Launch agent', { exact: true }).tap();
-  await page.getByRole('button', { name: path.basename(workspaceDir), exact: true }).tap();
+  await page.getByTitle('Manage sessions and characters', { exact: true }).tap();
+  await launchNamedSession(page, { directoryPath: workspaceDir });
 }
 
 /** The page currently showing, read off the view toggle's title. */
@@ -107,7 +105,14 @@ async function twoFingerGesture(page: Page, from: [Pt, Pt], to: [Pt, Pt]) {
 }
 
 const cameraFollowId = (page: Page) =>
-  page.evaluate(() => window.__pixelAgentsTestHooks?.getCameraFollowId?.() ?? null);
+  page.evaluate(
+    () =>
+      (
+        globalThis.window as unknown as {
+          __pixelAgentsTestHooks?: { getCameraFollowId?: () => number | null };
+        }
+      ).__pixelAgentsTestHooks?.getCameraFollowId?.() ?? null,
+  );
 
 /** A one-finger press held for `ms` at (x, y), as TouchEvents dispatched on
  *  the element under the point (Playwright's touchscreen can only tap). */
@@ -135,19 +140,20 @@ async function longPress(page: Page, x: number, y: number, ms: number) {
   await fire('touchend', false);
 }
 
-/** Launch a mock-claude session from the + card and wait for its terminal. */
+/** Launch a mock-copilot session from the + card and wait for its terminal. */
 async function launchTerminal(
   page: Page,
   standalone: { tmpHome: string; workspaceDir: string },
   name: string,
 ) {
-  await arrangeNextClaudeInvocation(
+  await arrangeNextCopilotInvocation(
     standalone.tmpHome,
-    claudeScenario(name).holdOpenFor(60_000).build(),
+    copilotScenario(name).holdOpenFor(60_000).build(),
   );
   await launchFromCard(page, standalone.workspaceDir);
   const terminal = page.locator('.xterm').first();
-  await expect(terminal).toContainText('mock claude session', { timeout: 15_000 });
+  await expect(terminal).toContainText('mock copilot session', { timeout: 15_000 });
+  await expect(terminal).toContainText('[mock-copilot] sessionStart');
   return terminal;
 }
 
@@ -158,21 +164,23 @@ test.describe('Standalone / mobile shell', () => {
   test.use({
     hasTouch: true,
     isMobile: true,
-    standaloneOptions: { mockClaude: true, viewport: PHONE },
+    standaloneOptions: { mockCopilot: true, viewport: PHONE },
   });
 
-  test('phone shell: + card launches and slides to the terminal; toggle, card taps and edge swipe navigate @area:mobile', async ({
+  test('phone shell: + card manages a named session and opens its terminal; toggle, card taps and edge swipe navigate @area:mobile', async ({
     page,
     standalone,
   }) => {
-    await arrangeNextClaudeInvocation(
+    await arrangeNextCopilotInvocation(
       standalone.tmpHome,
-      claudeScenario('mobile shell launch').holdOpenFor(60_000).build(),
+      // Outlive the test's own timeout so the mock never exits mid-flow under
+      // load; the fixture's teardown kills its PTY.
+      copilotScenario('mobile shell launch').holdOpenFor(180_000).build(),
     );
 
     // The mobile shell, not the desktop one: no bottom toolbar, a launch card.
     await expect(page.getByRole('button', { name: 'Layout' })).toHaveCount(0);
-    const launch = page.getByTitle('Launch agent', { exact: true });
+    const launch = page.getByTitle('Manage sessions and characters', { exact: true });
     await expect(launch).toBeVisible();
     await expectView(page, 'office');
 
@@ -181,7 +189,7 @@ test.describe('Standalone / mobile shell', () => {
     const card = page.getByTitle('Agent 1', { exact: true });
     await expect(card).toBeVisible({ timeout: 15_000 });
     await expectView(page, 'terminal');
-    await expect(page.locator('.xterm').first()).toContainText('mock claude session', {
+    await expect(page.locator('.xterm').first()).toContainText('mock copilot session', {
       timeout: 15_000,
     });
 
@@ -314,17 +322,6 @@ test.describe('Standalone / mobile shell', () => {
     await longPress(page, at.x, at.y, 900);
     const pill = page.locator('.terminal-copy-pill');
     await pill.getByRole('button', { name: 'Copy', exact: true }).tap();
-    await expect(pill).toHaveCount(0);
-    expect(await page.evaluate(() => (window as unknown as { __copied?: string }).__copied)).toBe(
-      word,
-    );
-
-    // The pill's second action, "Copy as text", copies through the same path.
-    await page.evaluate(() => {
-      (window as unknown as { __copied?: string }).__copied = undefined;
-    });
-    await longPress(page, at.x, at.y, 900);
-    await pill.getByRole('button', { name: 'Copy as text', exact: true }).tap();
     await expect(pill).toHaveCount(0);
     expect(await page.evaluate(() => (window as unknown as { __copied?: string }).__copied)).toBe(
       word,

@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  CONSENT_DISCLOSURE,
-  CONSENT_INSTALL_HEADLINE,
-} from '../src/providers/hook/claude/consentCopy.js';
 import { consentActionFor, hooksConsentRequest } from '../src/providers/hook/consentGate.js';
-import { claudeProvider } from '../src/providers/index.js';
+import { copilotProvider } from '../src/providers/index.js';
 
+const { headline: CONSENT_INSTALL_HEADLINE, disclosure: CONSENT_DISCLOSURE } =
+  copilotProvider.consentDisclosure();
 /**
  * consentGate is the ONE place both surfaces decide whether to ask for hooks consent and what an answer means, per
  * provider. A surface carrying its own copy of either rule drifts silently, and a settings file in the user's home
@@ -22,9 +20,9 @@ describe('hooksConsentRequest — when to ask', () => {
   };
 
   it('asks the one population with nothing of ours installed', () => {
-    expect(hooksConsentRequest(askable, claudeProvider)).toEqual({
+    expect(hooksConsentRequest(askable, copilotProvider)).toEqual({
       type: 'hooksConsentRequest',
-      providerId: 'claude',
+      providerId: 'copilot',
       headline: CONSENT_INSTALL_HEADLINE,
       disclosure: CONSENT_DISCLOSURE,
     });
@@ -33,9 +31,9 @@ describe('hooksConsentRequest — when to ask', () => {
   // The payload carries the provider's copy so the webview renders the exact
   // terms being approved. A client-side duplicate is the failure this guards.
   it("ships the provider's disclosure, not a summary of it", () => {
-    const request = hooksConsentRequest(askable, claudeProvider);
+    const request = hooksConsentRequest(askable, copilotProvider);
     expect(request?.disclosure).toBe(CONSENT_DISCLOSURE);
-    expect(request?.disclosure).toContain('~/.claude/settings.json');
+    expect(request?.disclosure).toContain('~/.copilot/hooks');
   });
 
   // Each of these is a reason the ask would be wrong, not merely redundant.
@@ -45,14 +43,14 @@ describe('hooksConsentRequest — when to ask', () => {
     ['the user turned hooks off', { hooksEnabled: false }],
     ['the client could not act on an answer', { privileged: false }],
   ])('does not ask when %s', (_why, override) => {
-    expect(hooksConsentRequest({ ...askable, ...override }, claudeProvider)).toBeNull();
+    expect(hooksConsentRequest({ ...askable, ...override }, copilotProvider)).toBeNull();
   });
 
   // An untokened standalone spectator's hooksConsentResponse is dropped by the
   // handler, so showing it the dialog would be asking a question whose answer
   // is discarded. The privilege check gates the ASK, not just the response.
   it('never asks an unprivileged client, even when everything else lines up', () => {
-    expect(hooksConsentRequest({ ...askable, privileged: false }, claudeProvider)).toBeNull();
+    expect(hooksConsentRequest({ ...askable, privileged: false }, copilotProvider)).toBeNull();
   });
 });
 
@@ -107,7 +105,7 @@ describe('consentActionFor — what an answer means', () => {
     expect(consentActionFor('notNow', landed)).toBe('revert');
   });
 
-  // The population issue #377 is about: a settings.json we refuse to touch.
+  // A failed install can leave a consent grant without an installed hook file.
   // Install grants BEFORE it writes, so a failed install leaves a grant with
   // nothing on disk — and the grant alone retires the ask forever. Keying the
   // revert off `installed` read this as "nothing to undo" and the user was

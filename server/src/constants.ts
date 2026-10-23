@@ -1,67 +1,6 @@
-// ── JSONL File Watching ─────────────────────────────────────
-export const JSONL_POLL_INTERVAL_MS = 1000;
-export const FILE_WATCHER_POLL_INTERVAL_MS = 500;
-export const PROJECT_SCAN_INTERVAL_MS = 1000;
-
-// ── Heuristic Agent Status Detection ────────────────────────
-// These timers are the fallback when CLI hooks are not active
-// (hookDelivered = false). When hooks are working, these are
-// suppressed and the server receives instant events instead.
-/** Delay before sending agentToolDone (prevents UI flicker on rapid tool transitions) */
-export const TOOL_DONE_DELAY_MS = 300;
-/** Heuristic: time after a non-exempt tool starts before showing permission bubble.
- *  Not used for teammates -- false positives on slow tools (WebFetch/WebSearch).
- *  Teammates rely on the lead's routed Notification(permission_prompt) hook. */
-export const PERMISSION_TIMER_DELAY_MS = 7000;
-/** Heuristic: silence duration before marking a text-only turn as complete */
-export const TEXT_IDLE_DELAY_MS = 5000;
-/** Heuristic: idle threshold for per-agent /clear detection (content check prevents stealing) */
-export const CLEAR_IDLE_THRESHOLD_MS = 2000;
-
-// ── External Session Detection ──────────────────────────────
-export const EXTERNAL_SCAN_INTERVAL_MS = 3000;
-/** Only adopt JSONL files modified within this window */
-export const EXTERNAL_ACTIVE_THRESHOLD_MS = 120_000; // 2 minutes
-/** Remove external agents after this much inactivity */
-// export const EXTERNAL_STALE_TIMEOUT_MS = 300_000; // 5 minutes - deprecated
-export const EXTERNAL_STALE_CHECK_INTERVAL_MS = 30_000;
-/** Cooldown after user closes an agent via X. Must be > EXTERNAL_ACTIVE_THRESHOLD_MS
- *  so the file's mtime becomes stale before the dismissal expires. */
-export const DISMISSED_COOLDOWN_MS = 180_000; // 3 minutes
-
-// ── Context Window Usage ────────────────────────────────────
-/** Window size assumed until a transcript proves otherwise. Transcripts never
- *  state the model's context limit, so this is the floor, not the truth. */
-export const DEFAULT_MAX_CONTEXT_TOKENS = 200_000;
-/** Known window sizes, ascending. The smallest tier that fits the largest
- *  context observed so far wins; beyond the last tier we round up to a whole
- *  multiple of it, so an unknown future window still reads under 100%. */
-export const CONTEXT_WINDOW_TIERS = [200_000, 1_000_000] as const;
-/** How much of a transcript's tail to read when seeding an agent's context on
- *  adoption or restore. Comfortably more than one turn's worth of records. */
-export const CONTEXT_SEED_TAIL_BYTES = 256 * 1024;
-
-// ── Global Session Scanning ─────────────────────────────────
-/** Only adopt global JSONL files larger than this (filters out empty/init-only sessions) */
-export const GLOBAL_SCAN_ACTIVE_MIN_SIZE = 3_072; // 3KB
-/** Only adopt global JSONL files modified within this window */
-export const GLOBAL_SCAN_ACTIVE_MAX_AGE_MS = 600_000; // 10 minutes
-
-// ── Directory Suggestions ───────────────────────────────────
-/** How much of a session transcript is read to recover the working directory it
- *  records. The cwd sits on the first records, so the head is enough — whole
- *  transcripts run to megabytes and there is one per session on the machine. */
-export const DIRECTORY_SUGGESTION_HEAD_BYTES = 8_192;
-/** Transcripts tried per session directory before moving on. Every session in
- *  one directory shares a cwd (the directory name encodes it), so the extra
- *  attempts only cover empty or half-written files. */
-export const DIRECTORY_SUGGESTION_FILES_PER_SESSION_DIR = 5;
-/** Upper bound on suggestions returned, so a long agent history can't flood the
- *  Directory modal on a phone. The newest survive the cut — the list is ordered
- *  by when a session last ran there. */
-export const DIRECTORY_SUGGESTION_LIMIT = 10;
-
 // ── Display Truncation + Pixel Agents Server paths ──────────
+export const CHARACTER_NAME_MAX_LENGTH = 64;
+export const SESSION_METADATA_HEAD_BYTES = 64 * 1024;
 // Centralized in core/src/constants.ts; re-exported here for back-compat.
 export {
   BASH_COMMAND_DISPLAY_MAX_LENGTH,
@@ -102,12 +41,6 @@ export const WS_CLOSE_FORBIDDEN_ORIGIN = 4003;
  *  already exited). The route only ever attaches; it cannot start one. */
 export const WS_CLOSE_NO_SESSION = 4004;
 
-export const HOOK_EVENT_BUFFER_MS = 5_000;
-/** Grace period after SessionEnd(reason=clear/resume) before triggering onSessionEnd.
- *  /clear and /resume fire SessionEnd then SessionStart within ms. This timeout is a
- *  safety net: if SessionStart never arrives (e.g. the CLI crashes mid-transition),
- *  the agent is cleaned up instead of staying as a zombie with pendingClear forever. */
-export const SESSION_END_GRACE_MS = 2000;
 export const MAX_HOOK_BODY_SIZE = 65_536; // 64KB
 
 // ── Standalone Embedded Terminal ────────────────────────────

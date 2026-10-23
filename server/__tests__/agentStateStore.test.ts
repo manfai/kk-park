@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { StateAdapter } from '../../core/src/adapter.js';
+import { createAgentState } from '../src/agentState.js';
 import { AgentStateStore } from '../src/agentStateStore.js';
 import type { AgentState, PersistedAgent } from '../src/types.js';
 
@@ -16,32 +17,14 @@ function createMockAdapter(): StateAdapter {
 }
 
 function createTestAgent(overrides: Partial<AgentState> = {}): AgentState {
-  return {
+  return createAgentState({
     id: 1,
     sessionId: 'sess-1',
-    terminalRef: undefined,
-    isExternal: false,
+    characterName: 'Test character',
     projectDir: '/test',
-    jsonlFile: '/test/session.jsonl',
-    fileOffset: 0,
-    lineBuffer: '',
-    activeToolIds: new Set(),
-    activeToolStatuses: new Map(),
-    activeToolNames: new Map(),
-    activeSubagentToolIds: new Map(),
-    activeSubagentToolNames: new Map(),
-    backgroundAgentToolIds: new Set(),
-    isWaiting: false,
-    permissionSent: false,
-    hadToolsInTurn: false,
-    lastDataAt: 0,
-    linesProcessed: 0,
-    seenUnknownRecordTypes: new Set(),
-    hookDelivered: false,
-    contextTokens: 0,
-    maxContextTokens: 200_000,
+    isExternal: false,
     ...overrides,
-  } as AgentState;
+  });
 }
 
 describe('AgentStateStore', () => {
@@ -146,11 +129,8 @@ describe('AgentStateStore', () => {
           id: 1,
           sessionId: 'sess-1',
           projectDir: '/proj',
-          jsonlFile: '/proj/sess-1.jsonl',
           directoryName: 'my-directory',
-          teamName: 'team-a',
-          agentName: undefined,
-          isTeamLead: true,
+          launchSessionId: 'launched-1',
         }),
       );
 
@@ -164,10 +144,10 @@ describe('AgentStateStore', () => {
       expect(saved[0].sessionId).toBe('sess-1');
       expect(saved[0].terminalName).toBe('');
       expect(saved[0].projectDir).toBe('/proj');
-      expect(saved[0].jsonlFile).toBe('/proj/sess-1.jsonl');
+      expect(saved[0].providerId).toBe('copilot');
+      expect(saved[0].hooksOnly).toBe(true);
+      expect(saved[0].launchSessionId).toBe('launched-1');
       expect(saved[0].directoryName).toBe('my-directory');
-      expect(saved[0].teamName).toBe('team-a');
-      expect(saved[0].isTeamLead).toBe(true);
     });
 
     it('persist without adapter is a no-op', () => {
@@ -179,8 +159,20 @@ describe('AgentStateStore', () => {
     it('loadPersistedAgents returns data from adapter', () => {
       const adapter = createMockAdapter();
       const persisted: PersistedAgent[] = [
-        { id: 1, terminalName: 'term-1', jsonlFile: '/a.jsonl', projectDir: '/proj' },
-        { id: 2, terminalName: 'term-2', jsonlFile: '/b.jsonl', projectDir: '/proj' },
+        {
+          id: 1,
+          terminalName: 'term-1',
+          sessionId: 'one',
+          projectDir: '/proj',
+          providerId: 'copilot',
+        },
+        {
+          id: 2,
+          terminalName: 'term-2',
+          sessionId: 'two',
+          projectDir: '/proj',
+          providerId: 'copilot',
+        },
       ];
       (adapter.loadAgents as ReturnType<typeof vi.fn>).mockReturnValue(persisted);
       store.setAdapter(adapter);

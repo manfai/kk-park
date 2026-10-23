@@ -1,8 +1,8 @@
 {
   "name": "pixel-agents",
   "displayName": "Pixel Agents",
-  "description": "Pixel art office where your Claude Code agents come to life as animated characters",
-  "version": "1.5.0",
+  "description": "Pixel art office where your Copilot CLI agents come to life as animated characters",
+  "version": "0.1.0",
   "publisher": "pablodelucca",
   "repository": {
     "type": "git",
@@ -36,7 +36,7 @@
     "LICENSE",
     "dist/cli.js",
     "dist/extension.js",
-    "dist/hooks/claude-hook.js",
+    "dist/hooks/copilot-hook.js",
     "dist/uninstall.js",
     "dist/assets/",
     "dist/webview/",
@@ -82,7 +82,7 @@
         "pixel-agents.autoSpawnAgent": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically spawn a Claude Code agent when VS Code starts, if no agents are currently running."
+          "description": "Automatically spawn a Copilot CLI agent when VS Code starts, if no agents are currently running."
         }
       }
     }

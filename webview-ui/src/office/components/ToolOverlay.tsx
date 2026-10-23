@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 
 import { Button } from '../../components/ui/Button.js';
 import {
+  ARCHIVE_LABEL_GAP_PX,
   BUBBLE_FADE_DURATION_SEC,
   BUBBLE_SITTING_OFFSET_PX,
   BUBBLE_VERTICAL_OFFSET_PX,
@@ -21,6 +22,7 @@ import {
   OVERLAY_LABEL_Z_INDEX,
   TEAM_LEAD_COLOR,
   TEAM_ROLE_COLOR,
+  THINKING_ACTIVITY_TEXT,
   TOOL_OVERLAY_VERTICAL_OFFSET,
 } from '../../constants.js';
 import type { SubagentCharacter } from '../../hooks/useExtensionMessages.js';
@@ -40,6 +42,7 @@ const WAITING_INPUT_ACTIVITY_TEXT = 'Waiting for input';
 interface ToolOverlayProps {
   officeState: OfficeState;
   agents: number[];
+  agentCharacterNames: Record<number, string>;
   agentTools: Record<number, ToolActivity[]>;
   subagentTools: Record<number, Record<string, ToolActivity[]>>;
   subagentCharacters: SubagentCharacter[];
@@ -48,6 +51,7 @@ interface ToolOverlayProps {
   panRef: React.RefObject<{ x: number; y: number }>;
   onCloseAgent: (id: number) => void;
   alwaysShowOverlay: boolean;
+  readOnly?: boolean;
 }
 
 /** Derive a short human-readable activity string from tools/status */
@@ -79,7 +83,7 @@ function getActivityText(
     }
   }
 
-  return 'Idle';
+  return isActive ? THINKING_ACTIVITY_TEXT : 'Idle';
 }
 
 function getFuelColor(ratio: number): string {
@@ -113,6 +117,7 @@ function OverlayBubble({ cached, dpr }: { cached: HTMLCanvasElement; dpr: number
 export function ToolOverlay({
   officeState,
   agents,
+  agentCharacterNames,
   agentTools,
   subagentTools,
   subagentCharacters,
@@ -121,6 +126,7 @@ export function ToolOverlay({
   panRef,
   onCloseAgent,
   alwaysShowOverlay,
+  readOnly = false,
 }: ToolOverlayProps) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -160,6 +166,41 @@ export function ToolOverlay({
         const isSelected = selectedId === id;
         const isHovered = hoveredId === id;
         const isSub = ch.isSubagent;
+
+        if (ch.isArchived) {
+          const cage =
+            ch.path.length === 0
+              ? officeState.furniture.find((item) => item.uid === ch.archiveCageId)
+              : undefined;
+          return (
+            <div
+              key={id}
+              className="absolute flex flex-col items-center -translate-x-1/2 -translate-y-full pointer-events-none select-none"
+              style={{
+                left: project.toScreenX(ch.x),
+                top:
+                  project.toScreenY(cage?.y ?? ch.y - TOOL_OVERLAY_VERTICAL_OFFSET) -
+                  ARCHIVE_LABEL_GAP_PX,
+                zIndex: OVERLAY_LABEL_Z_INDEX,
+              }}
+              data-testid="agent-overlay"
+              data-agent-id={id}
+            >
+              <span
+                className="text-3xl leading-none text-status-error whitespace-nowrap"
+                style={{ textShadow: 'var(--shadow-pixel)' }}
+                data-testid="archived-label"
+              >
+                ARCHIVED
+              </span>
+              {ch.archiveParkingError && (
+                <span role="alert" className="text-xs text-status-error text-center max-w-2xs">
+                  {ch.archiveParkingError}
+                </span>
+              )}
+            </div>
+          );
+        }
 
         // Speech bubble (permission dots / done checkmark) — rendered here in
         // the DOM, above the label panels (OVERLAY_BUBBLE_Z_INDEX over the label panels), for every
@@ -274,7 +315,8 @@ export function ToolOverlay({
         }
 
         // Team info
-        const teamRoleLabel = ch.isTeamLead ? 'LEAD' : ch.agentName || null;
+        const teamRoleLabel =
+          agentCharacterNames[id] || (ch.isTeamLead ? 'LEAD' : ch.agentName || null);
         const hasExtraLines = !!(ch.directoryName || teamRoleLabel);
 
         // Context gauge. Every agent gets one — lead, teammate, adopted,
@@ -333,7 +375,7 @@ export function ToolOverlay({
                     </span>
                   )}
                 </div>
-                {isSelected && !isSub && (
+                {isSelected && !isSub && !readOnly && !ch.isArchived && (
                   <Button
                     variant="ghost"
                     size="icon"
@@ -341,7 +383,7 @@ export function ToolOverlay({
                       e.stopPropagation();
                       onCloseAgent(id);
                     }}
-                    title="Close agent"
+                    title="Archive character"
                     className="ml-2 shrink-0 leading-none"
                   >
                     ×

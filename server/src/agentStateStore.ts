@@ -35,6 +35,7 @@ export interface StoreEvents {
   agentRemoved: (id: number) => void;
   agentUpdated: (id: number, agent: AgentState, field: string) => void;
   broadcast: (message: Record<string, unknown>) => void;
+  sessionsChanged: () => void;
 }
 
 /**
@@ -48,6 +49,7 @@ export class AgentStateStore {
   readonly nextAgentId = { current: 1 };
   readonly nextTerminalIndex = { current: 1 };
   private adapter: StateAdapter | undefined;
+  private sessionBatchDepth = 0;
 
   // ── Adapter ──────────────────────────────────────────────────
 
@@ -113,17 +115,20 @@ export class AgentStateStore {
   set(id: number, agent: AgentState): this {
     const isNew = !this.agents.has(id);
     this.agents.set(id, agent);
-    if (isNew) {
+    if (isNew && agent.characterName) {
       this.emitter.emit('agentAdded', id, agent);
     }
+    if (isNew) this.notifySessionsChanged();
     return this;
   }
 
   delete(id: number): boolean {
+    const visible = !!this.agents.get(id)?.characterName;
     const existed = this.agents.delete(id);
-    if (existed) {
+    if (existed && visible) {
       this.emitter.emit('agentRemoved', id);
     }
+    if (existed) this.notifySessionsChanged();
     return existed;
   }
 
@@ -134,8 +139,77 @@ export class AgentStateStore {
   // ── Broadcast (replaces direct webview.postMessage in server/) ─
 
   broadcast(message: Record<string, unknown>): void {
+    const id = typeof message.id === 'number' ? message.id : message.agentId;
+    if (
+      typeof id === 'number' &&
+      (String(message.type).startsWith('agent') || message.type === 'terminalSessionOpened') &&
+      (!this.agents.get(id)?.characterName || this.agents.get(id)?.archived)
+    )
+      return;
     debugLogBroadcast(message);
     this.emitter.emit('broadcast', message);
+  }
+
+  setCharacterName(id: number, name: string): void {
+    const agent = this.agents.get(id);
+    if (!agent) return;
+    const wasVisible = !!agent.characterName;
+    const oldName = agent.characterName;
+    agent.characterName = name || undefined;
+    try {
+      this.persistVerified(agent, 'characterName');
+    } catch (err) {
+      agent.characterName = oldName;
+      throw err;
+    }
+    if (agent.characterName) this.emitter.emit('agentAdded', id, agent);
+    else if (wasVisible) {
+      this.emitter.emit('agentRemoved', id);
+      this.broadcast({ type: 'terminalSessionClosed', agentId: id });
+    }
+    this.notifySessionsChanged();
+  }
+
+  setArchived(id: number, archived: boolean): void {
+    const agent = this.agents.get(id);
+    if (!agent) throw new Error('This session is no longer available.');
+    const previous = agent.archived;
+    agent.archived = archived || undefined;
+    try {
+      this.persistVerified(agent, 'archived');
+    } catch (error) {
+      agent.archived = previous;
+      throw error;
+    }
+    this.emitter.emit('agentAdded', id, agent);
+    this.notifySessionsChanged();
+  }
+
+  private persistVerified(agent: AgentState, field: 'characterName' | 'archived'): void {
+    this.persist();
+    if (!this.adapter) return;
+    const saved = this.adapter
+      .loadAgents()
+      .find((entry) => entry.id === agent.id && entry.sessionId === agent.sessionId);
+    if (!saved || saved[field] !== agent[field])
+      throw new Error(
+        'Could not save the session changes. Check local file permissions and try again.',
+      );
+  }
+
+  notifySessionsChanged(): void {
+    if (this.sessionBatchDepth) return;
+    this.emitter.emit('sessionsChanged');
+  }
+
+  batchSessions(update: () => void): void {
+    this.sessionBatchDepth++;
+    try {
+      update();
+    } finally {
+      this.sessionBatchDepth--;
+      if (!this.sessionBatchDepth) this.notifySessionsChanged();
+    }
   }
 
   // ── Lifecycle ───────────────────────────────────────────────
@@ -152,25 +226,18 @@ export class AgentStateStore {
     }
     const persisted: PersistedAgent[] = [];
     for (const agent of this.agents.values()) {
-      // Background-spawn children are derived state: the 1s scan re-materializes
-      // them from sidecars after a restore. Persisting them would resurrect
-      // immortal characters whose completion signal never comes.
-      if (agent.spawnToolUseId) continue;
       persisted.push({
         id: agent.id,
         sessionId: agent.sessionId,
+        characterName: agent.characterName,
+        archived: agent.archived,
+        providerId: agent.providerId,
+        hooksOnly: agent.hooksOnly,
+        launchSessionId: agent.launchSessionId,
         terminalName: agent.terminalRef?.name ?? '',
         isExternal: agent.isExternal || undefined,
-        jsonlFile: agent.jsonlFile,
         projectDir: agent.projectDir,
         directoryName: agent.directoryName,
-        teamName: agent.teamName,
-        agentName: agent.agentName,
-        isTeamLead: agent.isTeamLead,
-        leadAgentId: agent.leadAgentId,
-        teamUsesTmux: agent.teamUsesTmux,
-        backgroundAgentToolIds:
-          agent.backgroundAgentToolIds.size > 0 ? [...agent.backgroundAgentToolIds] : undefined,
         palette: agent.palette,
         hueShift: agent.hueShift,
       });

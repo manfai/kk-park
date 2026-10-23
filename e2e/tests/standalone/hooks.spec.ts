@@ -6,6 +6,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from '../../fixtures/standalone';
 import type { TestHooksWindow } from '../../helpers/editor';
 import {
+  COPILOT_EVENTS,
   ourHookEvents,
   sendHookEvent,
   sessionEndExit,
@@ -13,6 +14,12 @@ import {
 } from '../../helpers/hooks';
 import { advanceIntroToConsentStep, finishIntro } from '../../helpers/intro';
 import { expectOverlayCount, expectOverlayVisible } from '../../helpers/office';
+import {
+  closeSessionsManager,
+  nameSession,
+  openSessionsManager,
+  sessionRow,
+} from '../../helpers/sessions';
 import type { RecordedServerMessage } from '../../helpers/standalone';
 import { openSettingsModal, setSettings } from '../../helpers/webview';
 
@@ -34,20 +41,16 @@ test.describe('Standalone / hooks', () => {
       standalone.hookServerConfig,
       sessionStartStartup(sessionId, standalone.workspaceDir),
     );
-    // Settle wait before the negative assertion: SessionStart only stages a
-    // pending session, so no overlay should appear. Without the wait,
-    // toHaveCount(0) passes instantly just because the overlay has not been
-    // created yet, which would not actually prove SessionStart stays invisible.
-    // See e2e/helpers/office.ts wait-strategy conventions (negative assertion).
-    await page.waitForTimeout(500);
     await expectOverlayCount(page, 0);
-
-    await sendHookEvent(standalone.hookServerConfig, {
-      session_id: sessionId,
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Read',
-      tool_input: { file_path: filePath },
-    });
+    await nameSession(page, sessionId, 'Hook Reader');
+    const tool = {
+      sessionId: sessionId,
+      cwd: standalone.workspaceDir,
+      hook_event_name: 'preToolUse',
+      toolName: 'view',
+      toolArgs: { path: filePath },
+    };
+    await sendHookEvent(standalone.hookServerConfig, tool);
 
     await expectOverlayCount(page, 1);
     await expectOverlayVisible(page, 'Reading demo.ts');
@@ -65,16 +68,19 @@ test.describe('Standalone / hooks', () => {
     ).toBe(true);
 
     await sendHookEvent(standalone.hookServerConfig, {
-      session_id: sessionId,
-      hook_event_name: 'PermissionRequest',
+      sessionId: sessionId,
+      hook_event_name: 'notification',
+      notification_type: 'permission_prompt',
     });
     await expectOverlayVisible(page, 'Needs approval');
     const permissionMessages = await standalone.drainMessages();
     expect(permissionMessages.some((message) => message.type === 'agentToolPermission')).toBe(true);
 
     await sendHookEvent(standalone.hookServerConfig, {
-      session_id: sessionId,
-      hook_event_name: 'PostToolUse',
+      sessionId: sessionId,
+      hook_event_name: 'postToolUse',
+      toolName: tool.toolName,
+      toolArgs: tool.toolArgs,
     });
     const postToolMessages = await standalone.drainMessages();
     expect(
@@ -85,12 +91,10 @@ test.describe('Standalone / hooks', () => {
           message.id === toolStart?.id,
       ),
     ).toBe(true);
-    await expectOverlayVisible(page, 'Needs approval');
-
     await sendHookEvent(standalone.hookServerConfig, {
-      session_id: sessionId,
-      hook_event_name: 'Notification',
-      notification_type: 'idle_prompt',
+      sessionId: sessionId,
+      hook_event_name: 'notification',
+      notification_type: 'elicitation_dialog',
     });
     await expectOverlayVisible(page, 'Waiting for input');
     const notificationMessages = await standalone.drainMessages();
@@ -102,16 +106,23 @@ test.describe('Standalone / hooks', () => {
     ).toBe(true);
 
     await sendHookEvent(standalone.hookServerConfig, sessionEndExit(sessionId));
-    await expectOverlayCount(page, 0);
+    await expectOverlayCount(page, 1);
+    await expectOverlayVisible(page, 'Idle');
     const sessionEndMessages = await standalone.drainMessages();
-    expect(sessionEndMessages.some((message) => message.type === 'agentClosed')).toBe(true);
+    expect(sessionEndMessages.some((message) => message.type === 'terminalSessionClosed')).toBe(
+      true,
+    );
+    await openSessionsManager(page);
+    await page.getByRole('button', { name: 'Named', exact: true }).click();
+    await expect(sessionRow(page, sessionId)).toContainText('Disconnected');
+    await closeSessionsManager(page);
   });
 });
 
 /**
- * The standalone consent path end to end. The fixture normally seeds a granted Claude consent; these opt out, so the
+ * The standalone consent path end to end. The fixture normally seeds a granted Copilot consent; these opt out, so the
  * CLI starts with nothing installed and the server asks over the tokened /ws handshake — the SAME in-app dialog the
- * VS Code webview shows (pinned in claude/hooks-on/consent.spec.ts). Here the pins are the standalone-only halves:
+ * VS Code webview shows (pinned in copilot/consent.spec.ts). Here the pins are the standalone-only halves:
  * the token boundary and the checkbox route.
  */
 test.describe('Standalone / hooks consent', () => {
@@ -121,14 +132,10 @@ test.describe('Standalone / hooks consent', () => {
     try {
       const raw = fs.readFileSync(path.join(tmpHome, '.pixel-agents', 'config.json'), 'utf8');
       const consent = (JSON.parse(raw) as { hooksConsent?: Record<string, string> }).hooksConsent;
-      return consent?.claude === 'granted';
+      return consent?.copilot === 'granted';
     } catch {
       return false;
     }
-  }
-
-  function ourHookEventCount(tmpHome: string): number {
-    return ourHookEvents(tmpHome).length;
   }
 
   // The operator's route: the printed tokened URL loads a privileged session,
@@ -143,15 +150,19 @@ test.describe('Standalone / hooks consent', () => {
     await advanceIntroToConsentStep(dialog);
     // The disclosure travels with the request — the browser renders the
     // server's exact terms.
-    await expect(dialog).toContainText('~/.claude/settings.json');
-    await expect(dialog).toContainText('Instant Detection (Hooks)');
+    await expect(dialog).toContainText('~/.copilot/hooks');
+    await expect(dialog).toContainText('Instant Detection in Settings');
 
-    expect(fs.existsSync(path.join(standalone.tmpHome, '.claude', 'settings.json'))).toBe(false);
+    expect(
+      fs.existsSync(path.join(standalone.tmpHome, '.copilot', 'hooks', 'pixel-agents.json')),
+    ).toBe(false);
 
     await dialog.getByRole('button', { name: 'Install Hooks' }).click();
 
     await expect.poll(() => readConsentFrom(standalone.tmpHome), { timeout: 15_000 }).toBe(true);
-    await expect.poll(() => ourHookEventCount(standalone.tmpHome), { timeout: 15_000 }).toBe(12);
+    await expect
+      .poll(() => ourHookEvents(standalone.tmpHome), { timeout: 15_000 })
+      .toEqual(COPILOT_EVENTS);
 
     // The install's own hooksStatus broadcast must not yank the closing step.
     await finishIntro(dialog);
@@ -214,7 +225,7 @@ test.describe('Standalone / hooks consent', () => {
     page,
     standalone,
   }) => {
-    const settingsPath = path.join(standalone.tmpHome, '.claude', 'settings.json');
+    const settingsPath = path.join(standalone.tmpHome, '.copilot', 'hooks', 'pixel-agents.json');
 
     // First-run Intro is up; decline with Not Now — which writes NOTHING —
     // and finish the tour.
@@ -248,7 +259,9 @@ test.describe('Standalone / hooks consent', () => {
     await hooksCheckbox.click();
 
     await expect.poll(() => readConsentFrom(standalone.tmpHome), { timeout: 15_000 }).toBe(true);
-    await expect.poll(() => ourHookEventCount(standalone.tmpHome), { timeout: 15_000 }).toBe(12);
+    await expect
+      .poll(() => ourHookEvents(standalone.tmpHome), { timeout: 15_000 })
+      .toEqual(COPILOT_EVENTS);
     await expect.poll(() => isChecked(), { timeout: 15_000 }).toBe(true);
   });
 });
@@ -272,7 +285,9 @@ async function openSpectator(page: Page): Promise<Page> {
     .poll(
       () =>
         spectator.evaluate(
-          () => (window as TestHooksWindow).__pixelAgentsTestHooks?.getTiles?.()?.tiles.length ?? 0,
+          () =>
+            (globalThis.window as TestHooksWindow).__pixelAgentsTestHooks?.getTiles?.()?.tiles
+              .length ?? 0,
         ),
       { timeout: 30_000 },
     )

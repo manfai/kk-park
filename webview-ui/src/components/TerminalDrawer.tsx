@@ -10,6 +10,8 @@ import { Button } from './ui/Button.js';
 interface TerminalDrawerProps {
   /** Agent ids with a live PTY, in open order. */
   agentIds: number[];
+  /** Named office sessions, including ones with no managed terminal yet. */
+  cardAgentIds: number[];
   /** The pane showing (useTerminalDrawer's resolution); its card is the active tab. */
   shownAgentId: number | null;
   onSelectAgent: (agentId: number) => void;
@@ -44,6 +46,7 @@ interface TerminalDrawerProps {
  */
 export function TerminalDrawer({
   agentIds,
+  cardAgentIds,
   shownAgentId,
   onSelectAgent,
   onCloseAgent,
@@ -55,14 +58,14 @@ export function TerminalDrawer({
   statusFor,
   onStatusChange,
 }: TerminalDrawerProps) {
-  if (agentIds.length === 0) return null;
+  if (cardAgentIds.length === 0) return null;
 
   return (
     <div className="h-full shrink-0 flex">
       {/* The cards are the panel's tabs — clicking one selects that agent's
           pane (App also reopens the panel if it's closed). */}
       <AgentCardBar
-        agentIds={agentIds}
+        agentIds={cardAgentIds}
         activeAgentId={shownAgentId}
         getAppearance={getAppearance}
         statusFor={statusFor}

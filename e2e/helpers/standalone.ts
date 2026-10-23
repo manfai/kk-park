@@ -1,7 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 
 import { expect, type Page } from '@playwright/test';
@@ -10,9 +9,9 @@ import { type HookServerConfig, waitForHookServer } from './hooks';
 
 const REPO_ROOT = path.join(__dirname, '../..');
 const STANDALONE_CLI = path.resolve(REPO_ROOT, 'dist', 'cli.js');
-const MOCK_CLAUDE_PATH = path.join(REPO_ROOT, 'e2e/fixtures/mock-claude');
-const MOCK_CLAUDE_CMD_PATH = path.join(REPO_ROOT, 'e2e/fixtures/mock-claude.cmd');
-const MOCK_CLAUDE_RUNNER_PATH = path.join(REPO_ROOT, 'e2e/fixtures/mock-claude-runner.cjs');
+const MOCK_COPILOT_PATH = path.join(REPO_ROOT, 'e2e/fixtures/mock-copilot');
+const MOCK_COPILOT_CMD_PATH = path.join(REPO_ROOT, 'e2e/fixtures/mock-copilot.cmd');
+const MOCK_COPILOT_RUNNER_PATH = path.join(REPO_ROOT, 'e2e/fixtures/mock-copilot-runner.cjs');
 const TAIL_FOLLOW_PATH = path.join(REPO_ROOT, 'e2e/fixtures/tail-follow.cjs');
 
 export interface RecordedServerMessage {
@@ -25,8 +24,8 @@ export interface StandaloneSession {
   workspaceDir: string;
   hostUrl: string;
   hookServerConfig: HookServerConfig;
-  /** Invocation log the mock claude appends to (under tmpHome/.claude-mock).
-   *  Only ever written when the session was launched with mockClaude: true. */
+  /** Invocation log the mock copilot appends to (under tmpHome/.copilot-mock).
+   *  Only ever written when the session was launched with mockCopilot: true. */
   mockLogFile: string;
   getHostLogs: () => string;
   cleanup: () => Promise<void>;
@@ -48,17 +47,17 @@ export interface LaunchStandaloneOptions {
   /** Reuse an existing workspace. A supplied directory is never removed by
    *  standalone cleanup. */
   workspaceDir?: string;
-  /** Pre-seed a granted Claude hooksConsent entry so the first-run dialog never
+  /** Pre-seed a granted Copilot hooksConsent entry so the first-run dialog never
    *  covers the office (default). The consent specs opt out with `false` —
    *  they are the only ones that want the dialog. Never overwrites a
    *  config.json that already exists (a shared HOME was seeded by its owner). */
   seedHooksConsent?: boolean;
   /** Extra CLI flags appended to the host spawn (e.g. ['--no-terminal']). */
   cliArgs?: string[];
-  /** Install the mock `claude` into an isolated bin dir and prepend it to the
+  /** Install the mock `copilot` into an isolated bin dir and prepend it to the
    *  host's PATH, so agents launched from the browser spawn the scenario
-   *  runner in the host's PTY instead of a real Claude CLI. */
-  mockClaude?: boolean;
+   *  runner in the host's PTY instead of a real Copilot CLI. */
+  mockCopilot?: boolean;
   /** Browser viewport (default 1280×800, the desktop shell). A phone-sized
    *  viewport renders the mobile shell instead. */
   viewport?: { width: number; height: number };
@@ -116,23 +115,23 @@ async function waitForHttpOk(url: string): Promise<void> {
 }
 
 /**
- * Copy the mock `claude` into a bin dir inside the isolated HOME. The wrapper
- * resolves its sibling scripts (mock-claude-runner.cjs, tail-follow.cjs)
+ * Copy the mock `copilot` into a bin dir inside the isolated HOME. The wrapper
+ * resolves its sibling scripts (mock-copilot-runner.cjs, tail-follow.cjs)
  * relative to its own dir, so both must live alongside it — same layout as the
  * VS Code fixture's bin dir (helpers/launch.ts). Returns the bin dir to
  * prepend to the host's PATH.
  */
-function installMockClaudeBin(homeDir: string): string {
+function installMockCopilotBin(homeDir: string): string {
   const binDir = path.join(homeDir, 'mock-bin');
   fs.mkdirSync(binDir, { recursive: true });
-  const binaryPath = path.join(binDir, process.platform === 'win32' ? 'claude.cmd' : 'claude');
+  const binaryPath = path.join(binDir, process.platform === 'win32' ? 'copilot.cmd' : 'copilot');
   if (process.platform === 'win32') {
-    fs.copyFileSync(MOCK_CLAUDE_CMD_PATH, binaryPath);
+    fs.copyFileSync(MOCK_COPILOT_CMD_PATH, binaryPath);
   } else {
-    fs.copyFileSync(MOCK_CLAUDE_PATH, binaryPath);
+    fs.copyFileSync(MOCK_COPILOT_PATH, binaryPath);
     fs.chmodSync(binaryPath, 0o755);
   }
-  fs.copyFileSync(MOCK_CLAUDE_RUNNER_PATH, path.join(binDir, 'mock-claude-runner.cjs'));
+  fs.copyFileSync(MOCK_COPILOT_RUNNER_PATH, path.join(binDir, 'mock-copilot-runner.cjs'));
   fs.copyFileSync(TAIL_FOLLOW_PATH, path.join(binDir, 'tail-follow.cjs'));
   return binDir;
 }
@@ -148,7 +147,7 @@ function spawnStandaloneHost(args: {
   hostPort: number;
   workspaceDir: string;
   cliArgs?: string[];
-  mockClaude?: boolean;
+  mockCopilot?: boolean;
 }): ChildProcessWithoutNullStreams {
   if (!fs.existsSync(STANDALONE_CLI)) {
     throw new Error(
@@ -159,11 +158,12 @@ function spawnStandaloneHost(args: {
     ...process.env,
     HOME: args.homeDir,
     USERPROFILE: args.homeDir,
+    COPILOT_HOME: path.join(args.homeDir, '.copilot'),
   };
-  if (args.mockClaude) {
-    // The host's PTYs inherit its env, so a browser-launched `claude` resolves
+  if (args.mockCopilot) {
+    // The host's PTYs inherit its env, so a browser-launched `copilot` resolves
     // to the mock. PIXEL_AGENTS_NODE_BIN keeps the wrapper on this exact node.
-    const binDir = installMockClaudeBin(args.homeDir);
+    const binDir = installMockCopilotBin(args.homeDir);
     env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ''}`;
     env.PIXEL_AGENTS_NODE_BIN = process.execPath;
   }
@@ -287,13 +287,15 @@ export async function launchStandalone(
   page: Page,
   options: LaunchStandaloneOptions = {},
 ): Promise<StandaloneSession> {
+  const scratchRoot = path.join(REPO_ROOT, 'test-results', 'e2e', 'isolated');
+  fs.mkdirSync(scratchRoot, { recursive: true });
   const ownsHome = options.homeDir === undefined;
   const ownsWorkspace = options.workspaceDir === undefined;
   const tmpHome =
-    options.homeDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-standalone-e2e-home-'));
+    options.homeDir ?? fs.mkdtempSync(path.join(scratchRoot, 'pixel-standalone-e2e-home-'));
   const workspaceDir =
     options.workspaceDir ??
-    fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-standalone-e2e-workspace-'));
+    fs.mkdtempSync(path.join(scratchRoot, 'pixel-standalone-e2e-workspace-'));
   fs.mkdirSync(tmpHome, { recursive: true });
   fs.mkdirSync(workspaceDir, { recursive: true });
   // Consent baseline, mirroring the VS Code launch helper: without it the CLI
@@ -307,7 +309,7 @@ export async function launchStandalone(
     // default overrides `standalone` through seedConfig.
     const seeded = {
       standalone: { showHostDirectories: true },
-      ...((options.seedHooksConsent ?? true) ? { hooksConsent: { claude: 'granted' } } : {}),
+      ...((options.seedHooksConsent ?? true) ? { hooksConsent: { copilot: 'granted' } } : {}),
       ...options.seedConfig,
     };
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -329,7 +331,7 @@ export async function launchStandalone(
       hostPort,
       workspaceDir,
       cliArgs: options.cliArgs,
-      mockClaude: options.mockClaude,
+      mockCopilot: options.mockCopilot,
     });
     proc.stdout.on('data', (chunk) => {
       hostStdout += chunk.toString();
@@ -344,7 +346,7 @@ export async function launchStandalone(
   try {
     await page.setViewportSize(options.viewport ?? { width: 1280, height: 800 });
     // Mark this as the e2e harness before navigation so the standalone webview
-    // installs its test-only observability hooks (window.__pixelAgentsTestHooks).
+    // installs its test-only observability hooks (globalThis.window.__pixelAgentsTestHooks).
     await page.addInitScript(() => {
       (window as unknown as { __PIXEL_AGENTS_E2E?: boolean }).__PIXEL_AGENTS_E2E = true;
     });
@@ -362,7 +364,7 @@ export async function launchStandalone(
       workspaceDir,
       hostUrl,
       hookServerConfig,
-      mockLogFile: path.join(tmpHome, '.claude-mock', 'invocations.log'),
+      mockLogFile: path.join(tmpHome, '.copilot-mock', 'invocations.log'),
       getHostLogs: () =>
         [hostStdout.trim(), hostStderr.trim()].filter((value) => value.length > 0).join('\n'),
       drainMessages: () => drainRecordedMessages(page),

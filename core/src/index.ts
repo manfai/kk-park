@@ -24,4 +24,3 @@ export type {
   PlacedFurniture,
   SpriteData,
 } from './schemas.js';
-export type { TeamProvider } from './teamProvider.js';

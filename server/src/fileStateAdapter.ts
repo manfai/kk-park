@@ -4,13 +4,10 @@
  * Settings (per adapter namespace) persist to
  *   ~/.pixel-agents/config.json  under keys "vscode" or "standalone".
  *
- * Agents + seats (per adapter) persist to
- *   ~/.pixel-agents/<namespace>-state.json
+ * Agents + seats persist per adapter in <namespace>-copilot-state.json.
  *
- * Runtime visibility (which agents show in the office) is scope-controlled by the
- * runtime scanner + Watch All Sessions toggle, not by persistence. Both adapters
- * can observe the same ~/.claude/projects/ filesystem; each keeps its own local
- * agent IDs and seat mappings.
+ * All known sessions are retained; only locally named sessions get office characters.
+ * Both adapters observe Copilot hooks and keep their own IDs, names and seat mappings.
  */
 
 import * as fs from 'fs';
@@ -22,6 +19,7 @@ import type { PersistedAgent } from '../../core/src/schemas.js';
 import type { AdapterSettingKey, AdapterSettings, ConfigNamespace } from './configPersistence.js';
 import { ADAPTER_SETTING_KEYS, readConfig, writeConfig } from './configPersistence.js';
 import { LAYOUT_FILE_DIR } from './constants.js';
+import { COPILOT_PROVIDER_ID } from './providers/hook/copilot/constants.js';
 
 const ADAPTER_SETTING_KEY_SET: ReadonlySet<string> = new Set(ADAPTER_SETTING_KEYS);
 
@@ -40,6 +38,7 @@ const EMPTY_STATE: AdapterState = { agents: [], seats: {} };
 
 export interface FileStateAdapterOptions {
   namespace: ConfigNamespace;
+  providerId?: string;
 }
 
 export class FileStateAdapter implements StateAdapter {
@@ -48,10 +47,14 @@ export class FileStateAdapter implements StateAdapter {
 
   constructor(options: FileStateAdapterOptions) {
     this.namespace = options.namespace;
+    if (options.providerId !== undefined && !/^[a-z0-9-]+$/.test(options.providerId)) {
+      throw new Error('Invalid provider ID for persisted agent state');
+    }
+    const suffix = `-${options.providerId ?? COPILOT_PROVIDER_ID}`;
     this.stateFilePath = path.join(
       os.homedir(),
       LAYOUT_FILE_DIR,
-      `${options.namespace}-state.json`,
+      `${options.namespace}${suffix}-state.json`,
     );
   }
 

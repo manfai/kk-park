@@ -50,16 +50,16 @@ async function attachText(
 export const test = base.extend<{
   standalone: StandaloneContext;
   _allureLabels: void;
-  /** Seed a granted Claude hooksConsent entry in the isolated HOME (default). The
+  /** Seed a granted Copilot hooksConsent entry in the isolated HOME (default). The
    *  consent specs opt out via `test.use({ seedHooksConsent: false })` so the
    *  first-run dialog shows — they are the only ones that want it. */
   seedHooksConsent: boolean;
-  /** Per-test host options (e.g. extra CLI flags, mock claude on PATH). Override
+  /** Per-test host options (e.g. extra CLI flags, mock copilot on PATH). Override
    *  with test.use({ standaloneOptions: {...} }) in a describe block. */
   standaloneOptions: LaunchStandaloneOptions;
 }>({
   seedHooksConsent: [true, { option: true }],
-  // Per-test host options (e.g. extra CLI flags, mock claude on PATH). Override
+  // Per-test host options (e.g. extra CLI flags, mock copilot on PATH). Override
   // with test.use({ standaloneOptions: {...} }) in a describe block.
   standaloneOptions: [{}, { option: true }],
   // Auto-fixture: tag every test with Allure epic + feature derived from its
@@ -84,10 +84,10 @@ export const test = base.extend<{
         path.join(standalone.tmpHome, '.pixel-agents', 'server.json'),
         'application/json',
       );
-      // Only ever written when the host launched a mock claude (mockClaude: true).
+      // Only ever written when the host launched a mock copilot (mockCopilot: true).
       await attachTextFileIfExists(
         testInfo,
-        'mock-claude-invocations',
+        'mock-copilot-invocations',
         standalone.mockLogFile,
         'text/plain',
       );

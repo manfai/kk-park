@@ -1,94 +1,136 @@
 import { expect, test } from '../../fixtures/standalone';
 import { preToolUseBash, sendHookEvent, sessionStartStartup } from '../../helpers/hooks';
+import { buildSeedLayout } from '../../helpers/layout-seed';
 import {
-  arrangeNextClaudeInvocation,
-  claudeScenario,
-  waitForClaudeHookSetup,
-} from '../../helpers/mock-claude';
+  arrangeNextCopilotInvocation,
+  copilotScenario,
+  waitForCopilotHookSetup,
+} from '../../helpers/mock-copilot';
 import { expectOverlayCount, expectOverlayVisible } from '../../helpers/office';
+import { closeSessionsManager, nameSession, openSessionsManager } from '../../helpers/sessions';
 import { clickAddAgent, setSettings } from '../../helpers/webview';
 
 /**
  * The standalone embedded terminal: browser "+ Agent" → server-side PTY running
- * the mock claude → xterm drawer in the page. This is terminal-driven, so it
+ * the mock copilot → xterm drawer in the page. This is terminal-driven, so it
  * follows the scenario-builder rule (e2e/README.md "Mocking model & rules"):
  * the mock performs all timed actions; the test only clicks and observes.
  */
 test.describe('Standalone / terminal', () => {
-  // The PTY spawns `claude` (the mock's bash wrapper) directly, not through a
+  // The PTY spawns `copilot` (the mock's bash wrapper) directly, not through a
   // shell. Windows would need a cmd.exe hop to run the .cmd shim — untested
   // on this branch (design doc "Risks"), so the launch path is POSIX-only here.
   // Describe-level: the standalone fixture launches the mock-PATH host BEFORE
   // a test body runs, so an in-body skip would be too late to prevent it.
   test.skip(process.platform === 'win32', 'PTY spawn of the .cmd mock shim is untested on Windows');
-  test.use({ standaloneOptions: { mockClaude: true } });
+  test.use({ standaloneOptions: { mockCopilot: true } });
 
-  test('browser-launched agent gets a PTY terminal, hooks route to its character, close cleans up @area:standalone', async ({
-    page,
-    standalone,
-  }) => {
-    await setSettings(page, { alwaysShowLabels: true });
-    await waitForClaudeHookSetup(standalone.tmpHome);
-
-    // Mock performs its own timeline once launched: a Bash tool start at t+1s
-    // (proving hooks from a PTY-launched session route back to this agent's
-    // character), then holds the process open while the test observes.
-    await arrangeNextClaudeInvocation(
-      standalone.tmpHome,
-      claudeScenario('standalone pty launch')
-        .at(1_000)
-        .emitHook(preToolUseBash('{{sessionId}}', 'npm test') as Record<string, unknown>)
-        .holdOpenFor(60_000)
-        .build(),
-    );
-
-    // Launch from the browser: the press opens the Directory drawer, and the
-    // click on its single row (the server's start directory) sends launchAgent.
-    await clickAddAgent(page);
-
-    // Control plane: terminalSessionOpened -> an agent card (the drawer tab).
-    const agentCard = page.getByTitle('Agent 1');
-    await expect(agentCard).toBeVisible({ timeout: 15_000 });
-
-    // Data plane, output direction: PTY stdout → WebSocket → xterm DOM. The
-    // banner only exists if the mock really ran inside the server's PTY.
-    const terminal = page.locator('.xterm').first();
-    await expect(terminal).toContainText('mock claude session', { timeout: 15_000 });
-
-    // A character exists for the launched agent, and the t+1s hook lands on it.
-    await expectOverlayCount(page, 1);
-    await expectOverlayVisible(page, 'Running: npm test');
-
-    // Data plane, input direction: keystrokes → PTY. The kernel's tty echo
-    // writes them straight back, so they must appear in the terminal.
-    await terminal.click();
-    await page.keyboard.type('echo-round-trip');
-    await expect(terminal).toContainText('echo-round-trip', { timeout: 10_000 });
-
-    // Reload: the PTY outlives the socket. The reconnected page must rebuild
-    // the tab (webviewReady re-announce) and replay scrollback.
-    await page.reload();
-    await expect(page.getByTitle('Agent 1')).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator('.xterm').first()).toContainText('mock claude session', {
-      timeout: 15_000,
+  test.describe('Archive parking', () => {
+    test.use({
+      standaloneOptions: {
+        mockCopilot: true,
+        seedLayout: buildSeedLayout({
+          furniture: [{ uid: 'archive-cage', type: 'JAIL_CAGE', col: 5, row: 0 }],
+        }),
+      },
     });
+    test('browser-launched named agent gets a PTY, and confirmed Archive stops it while retaining its character @area:standalone', async ({
+      page,
+      standalone,
+    }) => {
+      await setSettings(page, { alwaysShowLabels: true });
+      await waitForCopilotHookSetup(standalone.tmpHome);
 
-    // Close from the card: PTY killed, tab removed, character despawns.
-    await page.getByTitle('Agent 1').locator('button[title="Close agent"]').click();
-    await expect(page.getByTitle('Agent 1')).toHaveCount(0);
-    await expectOverlayCount(page, 0);
+      // Mock performs its own timeline once launched: a Bash tool start at t+1s
+      // (proving hooks from a PTY-launched session route back to this agent's
+      // character), then holds the process open while the test observes.
+      await arrangeNextCopilotInvocation(
+        standalone.tmpHome,
+        copilotScenario('standalone pty launch')
+          .at(1_000)
+          .emitHook(preToolUseBash('{{sessionId}}', 'npm test') as Record<string, unknown>)
+          .holdOpenFor(60_000)
+          .build(),
+      );
+
+      // Launch from the browser: the press opens the Directory drawer, and the
+      // click on its single row (the server's start directory) sends launchAgent.
+      await clickAddAgent(page);
+
+      // Control plane: terminalSessionOpened -> an agent card (the drawer tab).
+      const agentCard = page.getByTitle('Agent 1');
+      await expect(agentCard).toBeVisible({ timeout: 15_000 });
+
+      // Data plane, output direction: PTY stdout → WebSocket → xterm DOM. The
+      // banner only exists if the mock really ran inside the server's PTY.
+      const terminal = page.locator('.xterm').first();
+      await expect(terminal).toContainText('mock copilot session', { timeout: 15_000 });
+
+      // A character exists for the launched agent, and the t+1s hook lands on it.
+      await expectOverlayCount(page, 1);
+      await expectOverlayVisible(page, 'Running command');
+
+      // Data plane, input direction: keystrokes → PTY. The kernel's tty echo
+      // writes them straight back, so they must appear in the terminal.
+      await terminal.click();
+      await page.keyboard.type('echo-round-trip');
+      await expect(terminal).toContainText('echo-round-trip', { timeout: 10_000 });
+
+      // Reload: the PTY outlives the socket. The reconnected page must rebuild
+      // the tab (webviewReady re-announce) and replay scrollback.
+      await page.reload();
+      await expect(page.getByTitle('Agent 1')).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator('.xterm').first()).toContainText('mock copilot session', {
+        timeout: 15_000,
+      });
+
+      // Archive from the card stops only this CLI and parks the named character.
+      await page.getByTitle('Agent 1').locator('button[title="Archive character"]').click();
+      await page
+        .getByTestId('archive-confirmation')
+        .getByRole('button', { name: 'Archive character', exact: true })
+        .click();
+      await expect(page.getByTitle('Agent 1')).toHaveCount(0);
+      await expectOverlayCount(page, 1);
+      await expectOverlayVisible(page, 'ARCHIVED');
+      await expect(page.locator('.xterm')).toHaveCount(0);
+    });
+  });
+
+  test.describe('Missing cage', () => {
+    test.use({ standaloneOptions: { mockCopilot: true, seedLayout: buildSeedLayout() } });
+    test('Archive explains missing cage and cannot stop the running CLI @area:standalone', async ({
+      page,
+      standalone,
+    }) => {
+      await arrangeNextCopilotInvocation(
+        standalone.tmpHome,
+        copilotScenario('no empty cage').holdOpenFor(60_000).build(),
+      );
+      await clickAddAgent(page);
+      await expect(page.locator('.xterm:visible')).toContainText('mock copilot session');
+      await page.getByTitle('Agent 1').locator('button[title="Archive character"]').click();
+      const confirmation = page.getByTestId('archive-confirmation');
+      await expect(confirmation.getByRole('alert')).toContainText('No reachable free Jail Cage');
+      await expect(
+        confirmation.getByRole('button', { name: 'Archive character', exact: true }),
+      ).toBeDisabled();
+      await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(page.getByTitle('Agent 1')).toBeVisible();
+      await expect(page.locator('.xterm:visible')).toContainText('mock copilot session');
+    });
   });
 
   test('every tab takes mouse input, and a narrow window keeps the cards and close reachable @area:standalone', async ({
     page,
     standalone,
   }) => {
-    await waitForClaudeHookSetup(standalone.tmpHome);
+    await waitForCopilotHookSetup(standalone.tmpHome);
 
     for (const n of [1, 2]) {
-      await arrangeNextClaudeInvocation(
+      await arrangeNextCopilotInvocation(
         standalone.tmpHome,
-        claudeScenario(`standalone pty tab ${n}`).holdOpenFor(60_000).build(),
+        copilotScenario(`standalone pty tab ${n}`).holdOpenFor(60_000).build(),
       );
       await clickAddAgent(page);
       await expect(page.getByTitle(`Agent ${n}`)).toBeVisible({ timeout: 15_000 });
@@ -100,7 +142,8 @@ test.describe('Standalone / terminal', () => {
     await page.getByTitle('Agent 1').click();
     const first = page.locator('.xterm:visible');
     await expect(first).toHaveCount(1);
-    await expect(first).toContainText('mock claude session', { timeout: 15_000 });
+    await expect(first).toContainText('mock copilot session', { timeout: 15_000 });
+    await expect(first).toContainText('[mock-copilot] sessionStart', { timeout: 15_000 });
     await first.click();
     await page.keyboard.type('first-tab-input');
     await expect(first).toContainText('first-tab-input', { timeout: 10_000 });
@@ -114,7 +157,7 @@ test.describe('Standalone / terminal', () => {
     await expect(page.getByTitle('Agent 2')).toBeInViewport({ ratio: 1 });
   });
 
-  test('copies are verbatim; Alt+C copies the selection re-flowed as text @area:standalone', async ({
+  test('copy preserves line breaks and indentation verbatim @area:standalone', async ({
     page,
     standalone,
   }) => {
@@ -134,17 +177,19 @@ test.describe('Standalone / terminal', () => {
       });
     });
     await page.reload();
-    await arrangeNextClaudeInvocation(
+    await arrangeNextCopilotInvocation(
       standalone.tmpHome,
-      claudeScenario('terminal copy').holdOpenFor(60_000).build(),
+      copilotScenario('terminal copy').holdOpenFor(60_000).build(),
     );
     await clickAddAgent(page);
     const terminal = page.locator('.xterm').first();
-    await expect(terminal).toContainText('mock claude session', { timeout: 15_000 });
+    await expect(terminal).toContainText('mock copilot session', { timeout: 15_000 });
+    // Startup runs the real bridge asynchronously; do not let its completion
+    // marker split the two lines whose verbatim clipboard text we assert.
+    await expect(terminal).toContainText('[mock-copilot] sessionStart');
     await terminal.click();
 
-    // A row filled to the soft-wrap width, then a two-space-indented line:
-    // exactly what the re-flow heuristic joins, typed through the PTY echo.
+    // A long row followed by an indented line, typed through the PTY echo.
     const cols = await page.evaluate(() => {
       const screen = document.querySelector('.xterm-screen');
       const rows = document.querySelector('.xterm-rows');
@@ -200,26 +245,25 @@ test.describe('Standalone / terminal', () => {
     await selectBoth();
     await page.keyboard.press('Control+Shift+C');
     await expect.poll(lastWrite).toBe(`${first}\n${second}`);
-
-    // Alt+C is the opt-in re-flow: the soft wrap joins.
-    await selectBoth();
-    await page.keyboard.press('Alt+C');
-    await expect.poll(lastWrite).toBe(`${first} ${second.trimStart()}`);
   });
 });
 
 test.describe('Standalone / terminal disabled', () => {
   test.use({ standaloneOptions: { cliArgs: ['--no-terminal'] } });
 
-  test('--no-terminal keeps the office watch-only: launch disabled, hook-driven agents still render @area:standalone', async ({
+  test('--no-terminal disables new launches but still manages named hook-driven agents @area:standalone', async ({
     page,
     standalone,
   }) => {
-    // The launch surface is off, with the reason discoverable on the button.
+    // Management stays available even when this host cannot create terminals.
     const addAgent = page.getByRole('button', { name: '+ Agent' });
     await expect(addAgent).toBeVisible();
-    await expect(addAgent).toBeDisabled();
-    await expect(addAgent).toHaveAttribute('title', 'Terminal disabled with --no-terminal.');
+    await expect(addAgent).toBeEnabled();
+    const manager = await openSessionsManager(page);
+    const newSession = manager.getByRole('button', { name: 'New session', exact: true });
+    await expect(newSession).toBeDisabled();
+    await expect(newSession).toHaveAttribute('title', 'Terminal disabled with --no-terminal.');
+    await closeSessionsManager(page);
     await expect(page.locator('.xterm')).toHaveCount(0);
 
     // Watching still works: an external session driven over the hook endpoint
@@ -231,9 +275,14 @@ test.describe('Standalone / terminal disabled', () => {
       standalone.hookServerConfig,
       sessionStartStartup(sessionId, standalone.workspaceDir),
     );
-    await sendHookEvent(standalone.hookServerConfig, preToolUseBash(sessionId, 'npm test'));
+    await expectOverlayCount(page, 0);
+    await nameSession(page, sessionId, 'No Terminal Reader');
+    await sendHookEvent(
+      standalone.hookServerConfig,
+      preToolUseBash(sessionId, 'npm test', standalone.workspaceDir),
+    );
 
     await expectOverlayCount(page, 1);
-    await expectOverlayVisible(page, 'Running: npm test');
+    await expectOverlayVisible(page, 'Running command');
   });
 });

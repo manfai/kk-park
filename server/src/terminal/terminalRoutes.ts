@@ -20,6 +20,7 @@ import type { FastifyInstance } from 'fastify';
 
 import { TERMINAL_WS_PREFIX } from '../../../core/src/constants.js';
 import { encodeTerminalFrame, parseClientFrame } from '../../../core/src/terminalFrames.js';
+import type { AgentStateStore } from '../agentStateStore.js';
 import {
   WS_CLOSE_FORBIDDEN_ORIGIN,
   WS_CLOSE_NO_SESSION,
@@ -33,6 +34,7 @@ export interface TerminalRoutesOptions {
   /** Host names a privileged handshake may arrive under (wsAuth.privilegedHostnames). */
   allowedHostnames: ReadonlySet<string>;
   ptyManager?: PtySessionManager;
+  store?: AgentStateStore;
 }
 
 /** Minimal structural view of the socket, so tests don't need a real WebSocket. */
@@ -84,7 +86,13 @@ export function registerTerminalRoutes(app: FastifyInstance, options: TerminalRo
       }
 
       const agentId = Number(request.params.agentId);
-      const session = ptyManager.get(agentId);
+      const agent = options.store?.get(agentId);
+      const terminalId = options.store
+        ? agent?.characterName && !agent.archived
+          ? agent.terminalAgentId
+          : undefined
+        : agentId;
+      const session = terminalId !== undefined ? ptyManager.get(terminalId) : undefined;
       if (!session) {
         // Only attaches to PTYs this server spawned -- it can never start one.
         socket.close(WS_CLOSE_NO_SESSION, 'no terminal for agent');
@@ -118,6 +126,17 @@ export function registerTerminalRoutes(app: FastifyInstance, options: TerminalRo
           encodeTerminalFrame({ type: 'exit', exitCode: exit.exitCode, signal: exit.signal }),
         );
       });
+      const bindingIsCurrent = (): boolean => {
+        const current = options.store?.get(agentId);
+        return (
+          !options.store ||
+          (!!current?.characterName && !current.archived && current.terminalAgentId === terminalId)
+        );
+      };
+      const onBindingChanged = (): void => {
+        if (!bindingIsCurrent()) socket.close(WS_CLOSE_NO_SESSION, 'session terminal changed');
+      };
+      options.store?.on('sessionsChanged', onBindingChanged);
 
       void session.snapshot().then((data) => {
         send(encodeTerminalFrame({ type: 'replay', data, cols: session.cols, rows: session.rows }));
@@ -127,6 +146,10 @@ export function registerTerminalRoutes(app: FastifyInstance, options: TerminalRo
       });
 
       socket.on('message', (raw: Buffer | string) => {
+        if (!bindingIsCurrent()) {
+          onBindingChanged();
+          return;
+        }
         const frame = parseClientFrame(raw.toString());
         if (!frame) return; // Malformed/unknown frames are ignored, never thrown on.
         if (frame.type === 'input') {
@@ -138,10 +161,11 @@ export function registerTerminalRoutes(app: FastifyInstance, options: TerminalRo
 
       socket.on('close', () => {
         // Detach only. The PTY outlives the socket so a reload reattaches to the
-        // still-running Claude session; only closeAgent (or the process exiting)
+        // still-running Copilot session; only closeAgent (or the process exiting)
         // ends it.
         offData();
         offExit();
+        options.store?.off('sessionsChanged', onBindingChanged);
       });
     },
   );

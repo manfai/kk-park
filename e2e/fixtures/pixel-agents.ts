@@ -5,7 +5,7 @@ import path from 'path';
 
 import { applyAllureLabels } from '../helpers/allure-labels';
 import { launchVSCode, type VSCodeSession, waitForWorkbench } from '../helpers/launch';
-import { killTrackedExternalProcesses } from '../helpers/mock-claude';
+import { killTrackedExternalProcesses } from '../helpers/mock-copilot';
 import {
   clearNarrationContext,
   finishNarration,
@@ -70,14 +70,14 @@ export const test = base.extend<{
   seedConfig: unknown;
   /** Pre-seed `~/.pixel-agents/layout.json` (must carry a high layoutRevision). */
   seedLayout: unknown;
-  /** Pre-seed `~/.claude/settings.json` (e.g. an existing hook install). */
-  seedClaudeSettings: unknown;
+  /** Pre-seed `~/.copilot/hooks/pixel-agents.json` (e.g. an existing hook install). */
+  seedCopilotHooks: unknown;
   /** Folder basenames for a multi-root workspace (>1 → multi-root). */
   workspaceFolders: string[];
 }>({
   seedConfig: [undefined, { option: true }],
   seedLayout: [undefined, { option: true }],
-  seedClaudeSettings: [undefined, { option: true }],
+  seedCopilotHooks: [undefined, { option: true }],
   workspaceFolders: [[], { option: true }],
   // Auto-fixture: tag every test with Allure epic + feature derived from its
   // @area: annotation and enclosing describe path. Runs before pixelAgents.
@@ -89,14 +89,14 @@ export const test = base.extend<{
     { auto: true },
   ],
   pixelAgents: async (
-    { seedConfig, seedLayout, seedClaudeSettings, workspaceFolders },
+    { seedConfig, seedLayout, seedCopilotHooks, workspaceFolders },
     use,
     testInfo,
   ) => {
     const session = await launchVSCode(testInfo.title, {
       seedConfig,
       seedLayout,
-      seedClaudeSettings,
+      seedCopilotHooks,
       workspaceFolders,
     });
     const { window, tmpHome, workspaceDir, mockLogFile } = session;
@@ -142,20 +142,20 @@ export const test = base.extend<{
       if (keepArtifacts) {
         await attachTextFileIfExists(
           testInfo,
-          'mock-claude-invocations',
+          'mock-copilot-invocations',
           mockLogFile,
           'text/plain',
         );
         await attachTextFileIfExists(
           testInfo,
-          'mock-claude-actions',
-          path.join(tmpHome, '.claude-mock', 'actions.log'),
+          'mock-copilot-actions',
+          path.join(tmpHome, '.copilot-mock', 'actions.log'),
           'text/plain',
         );
         await attachTextFileIfExists(
           testInfo,
           'launch-log',
-          path.join(tmpHome, '.claude-mock', 'launch.log'),
+          path.join(tmpHome, '.copilot-mock', 'launch.log'),
           'text/plain',
         );
         await attachTextFileIfExists(
@@ -181,7 +181,14 @@ export const test = base.extend<{
           const wvFrames = window.frames();
           for (const f of wvFrames) {
             if (!f.url().startsWith('vscode-webview://')) continue;
-            const log = await f.evaluate(() => window.__pixelAgentsTestHooks?.messageLog ?? null);
+            const log = await f.evaluate(
+              () =>
+                (
+                  globalThis.window as unknown as {
+                    __pixelAgentsTestHooks?: { messageLog?: unknown[] };
+                  }
+                ).__pixelAgentsTestHooks?.messageLog ?? null,
+            );
             if (log) {
               await testInfo.attach('webview-message-log', {
                 body: JSON.stringify(log, null, 2),
@@ -208,7 +215,7 @@ export const test = base.extend<{
 
       const attachRunVideo = runVideo !== null && shouldAttachRunVideo(testInfo);
       clearNarrationContext();
-      // Kill any leaked mock-claude processes spawned via spawnExternalClaudeScenario
+      // Kill any leaked mock-copilot processes spawned via spawnExternalCopilotScenario
       // BEFORE tearing down the session (and deleting tmpHome). Otherwise leaked
       // processes accumulate across the suite and add real environmental pressure.
       await killTrackedExternalProcesses();

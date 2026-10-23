@@ -9,8 +9,6 @@ const AREA_TO_EPIC: Record<string, string> = {
   spawn: 'Spawn paths',
   lifecycle: 'Lifecycle regressions',
   'cross-cutting': 'Cross-cutting checks',
-  teams: 'Teams routing',
-  matrix: 'Hooks-off matrix',
   standalone: 'Standalone server',
   pets: 'Pet system',
   carpet: 'Carpet system',

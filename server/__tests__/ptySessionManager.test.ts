@@ -72,7 +72,7 @@ function harness(overrides: Partial<PtyModuleResolution> = {}): Harness {
 }
 
 function create(manager: PtySessionManager, agentId = 1) {
-  return manager.create({ agentId, command: 'claude', args: ['--session-id', 'x'], cwd: '/tmp' });
+  return manager.create({ agentId, command: 'copilot', args: ['--session-id', 'x'], cwd: '/tmp' });
 }
 
 describe('PtySessionManager availability', () => {
@@ -122,7 +122,7 @@ describe('PtySessionManager lifecycle', () => {
   it('spawns with the requested command, cwd, and TERM', () => {
     const { manager, spawnArgs } = harness();
     create(manager, 7);
-    expect(spawnArgs[0].file).toBe('claude');
+    expect(spawnArgs[0].file).toBe('copilot');
     expect(spawnArgs[0].args).toEqual(['--session-id', 'x']);
     expect(spawnArgs[0].options.cwd).toBe('/tmp');
     expect((spawnArgs[0].options.env as Record<string, string>).TERM).toBeTruthy();
@@ -138,7 +138,7 @@ describe('PtySessionManager lifecycle', () => {
   });
 
   it('replacing an agent session kills the previous process', () => {
-    // Otherwise the old Claude would keep running with nothing attached to it.
+    // Otherwise the old Copilot would keep running with nothing attached to it.
     const { manager, spawned } = harness();
     create(manager, 1);
     create(manager, 1);

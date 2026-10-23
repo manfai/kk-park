@@ -47,23 +47,19 @@ describe('clipboardKeyAction on Windows / Linux', () => {
 });
 
 describe('clipboardKeyAction on a Mac', () => {
-  it('keeps Ctrl+C and Ctrl+V as terminal keys (Claude Code copy, image paste)', () => {
+  it('keeps Ctrl+C and Ctrl+V as terminal keys', () => {
     expect(clipboardKeyAction(ctrl('c'), true, true)).toBe('terminal');
     expect(clipboardKeyAction(ctrl('v'), true, false)).toBe('terminal');
     expect(clipboardKeyAction(chord('c', { metaKey: true }), true, true)).toBe('terminal');
   });
 });
 
-describe('Copy as text (Alt+C / Option+C)', () => {
-  it('re-flows a selection on every platform', () => {
-    expect(clipboardKeyAction(chord('c', { altKey: true }), false, true)).toBe('copyText');
-    // Option+C on a Mac types ç: the physical key is what counts.
+describe('Alt+C / Option+C', () => {
+  it('stays a terminal key with or without a selection', () => {
+    expect(clipboardKeyAction(chord('c', { altKey: true }), false, true)).toBe('terminal');
     expect(clipboardKeyAction(chord('ç', { altKey: true, code: 'KeyC' }), true, true)).toBe(
-      'copyText',
+      'terminal',
     );
-  });
-
-  it('is a terminal key without a selection', () => {
     expect(clipboardKeyAction(chord('c', { altKey: true }), false, false)).toBe('terminal');
     expect(clipboardKeyAction(chord('ç', { altKey: true, code: 'KeyC' }), true, false)).toBe(
       'terminal',

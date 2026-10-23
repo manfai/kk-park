@@ -204,7 +204,7 @@ describe('selection chrome geometry', () => {
     expect(copyPillPosition(r, grid).left).toBe(44);
   });
 
-  it('keeps a wide pill (Copy + Copy as text) wholly inside the host', () => {
+  it('keeps a wide copy pill wholly inside the host', () => {
     const left = { startRow: 55, startCol: 0, endRow: 55, endCol: 0 };
     const right = { startRow: 55, startCol: 39, endRow: 55, endCol: 39 };
     expect(copyPillPosition(left, grid, 110).left).toBe(110);

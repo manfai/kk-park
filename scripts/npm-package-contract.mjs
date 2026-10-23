@@ -19,7 +19,7 @@ export const REQUIRED_PACKAGE_FILES = [
   'README.md',
   'dist/cli.js',
   'dist/extension.js',
-  'dist/hooks/claude-hook.js',
+  'dist/hooks/copilot-hook.js',
   'dist/webview/index.html',
   'icon.png',
   'package.json',

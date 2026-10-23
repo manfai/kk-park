@@ -1,6 +1,8 @@
 import type { Frame, Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
+import { closeSessionsManager, launchNamedSession, openSessionsManager } from './sessions';
+
 /**
  * Settings/modal helpers work the same against a VS Code webview iframe
  * (Frame) and the standalone browser page (Page) — both expose Playwright's
@@ -426,18 +428,11 @@ export async function getPixelAgentsFrame(window: Page): Promise<Frame> {
 }
 
 /**
- * Launch an agent through the launch button: a plain press opens the Directory
- * drawer (it never launches by itself), and the launch is the click on a row.
- * Clicks the first row — the only one in a single-Directory office.
+ * Launch through Sessions, save a local Agent N name, then explicitly Open.
+ * Tests of unnamed sessions use launchUnnamedSession instead.
  */
 export async function clickAddAgent(surface: WebviewSurface): Promise<void> {
-  const btn = surface.locator('button', { hasText: '+ Agent' });
-  await expect(btn).toBeVisible({ timeout: WEBVIEW_TIMEOUT_MS });
-  await btn.click();
-  const drawer = getLaunchDrawer(surface);
-  await expect(drawer).toBeVisible({ timeout: WEBVIEW_TIMEOUT_MS });
-  // The DropdownItem is the row's first button (a pencil may follow it).
-  await drawer.locator('[data-testid="directory-row"]').first().locator('button').first().click();
+  await launchNamedSession(surface);
 }
 
 /** The launch button's drawer, once opened. */
@@ -466,8 +461,8 @@ export function getDirectoryModal(surface: WebviewSurface): Locator {
 
 /** Open the drawer's `+ Directory` row and return the modal it opens. */
 export async function openDirectoryModal(surface: WebviewSurface): Promise<Locator> {
-  const drawer = await openLaunchDrawer(surface);
-  await drawer.getByRole('button', { name: '+ Directory', exact: true }).click();
+  const manager = await openSessionsManager(surface);
+  await manager.getByRole('button', { name: '+ Directory', exact: true }).click();
   const modal = getDirectoryModal(surface);
   await expect(modal).toBeVisible({ timeout: WEBVIEW_TIMEOUT_MS });
   return modal;
@@ -506,10 +501,13 @@ export async function addDirectory(
   const modal = await openDirectoryModal(surface);
   await submitDirectoryModal(modal, values);
   await expect(modal).toBeHidden({ timeout: WEBVIEW_TIMEOUT_MS });
-  const drawer = await openLaunchDrawer(surface);
-  await expect(drawer.getByRole('button', { name: values.name, exact: true })).toBeVisible({
+  const manager = await openSessionsManager(surface);
+  await expect(
+    manager.getByRole('option', { name: `${values.name} — ${values.path}`, exact: true }),
+  ).toHaveCount(1, {
     timeout: WEBVIEW_TIMEOUT_MS,
   });
+  await closeSessionsManager(surface);
 }
 
 /** The modal's tappable path suggestions (absent entirely when there are none). */

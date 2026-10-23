@@ -84,6 +84,9 @@ components:
         - $ref: '#/components/schemas/AgentClosed'
         - $ref: '#/components/schemas/AgentSelected'
         - $ref: '#/components/schemas/ExistingAgents'
+        - $ref: '#/components/schemas/SessionsLoaded'
+        - $ref: '#/components/schemas/SessionActionRejected'
+        - $ref: '#/components/schemas/SessionOpened'
         # Agent status / tool activity
         - $ref: '#/components/schemas/AgentStatus'
         - $ref: '#/components/schemas/AgentToolStart'
@@ -135,6 +138,10 @@ components:
         - $ref: '#/components/schemas/LaunchAgent'
         - $ref: '#/components/schemas/FocusAgent'
         - $ref: '#/components/schemas/CloseAgent'
+        - $ref: '#/components/schemas/RequestSessions'
+        - $ref: '#/components/schemas/SetSessionCharacterName'
+        - $ref: '#/components/schemas/SetSessionArchived'
+        - $ref: '#/components/schemas/OpenSession'
         - $ref: '#/components/schemas/SaveAgentSeats'
         - $ref: '#/components/schemas/SaveLayout'
         - $ref: '#/components/schemas/SetSoundEnabled'
@@ -147,7 +154,6 @@ components:
         - $ref: '#/components/schemas/SetWatchAllSessions'
         - $ref: '#/components/schemas/ExportLayout'
         - $ref: '#/components/schemas/ImportLayout'
-        - $ref: '#/components/schemas/OpenSessionsFolder'
         - $ref: '#/components/schemas/AddExternalAssetDirectory'
         - $ref: '#/components/schemas/RemoveExternalAssetDirectory'
         - $ref: '#/components/schemas/SaveAreaMappings'
@@ -173,6 +179,12 @@ components:
       properties:
         type:
           const: providerCapabilities
+        providerId:
+          type: string
+          description: CLI tracked and launched by this office.
+        displayName:
+          type: string
+          description: Human-readable name of the selected CLI.
         readingTools:
           type: array
           items:
@@ -194,6 +206,12 @@ components:
           const: agentCreated
         id:
           type: integer
+        characterName:
+          type: string
+        archived:
+          type: boolean
+        hooksOnly:
+          type: boolean
         directoryName:
           type: string
         isExternal:
@@ -246,6 +264,10 @@ components:
           description: Map of agent ID (string) to seat metadata.
           additionalProperties:
             $ref: '#/components/schemas/AgentSeatMeta'
+        characterNames:
+          type: object
+          additionalProperties:
+            type: string
         directoryNames:
           type: object
           description: Map of agent ID (string) to Directory name.
@@ -256,6 +278,114 @@ components:
           description: Map of agent ID (string) to external flag.
           additionalProperties:
             type: boolean
+
+    SessionEntry:
+      type: object
+      additionalProperties: false
+      required: [id, sessionId, projectDir, connected, canOpen, status]
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: string
+        characterName:
+          type: string
+        archived:
+          type: boolean
+        projectDir:
+          type: string
+        directoryName:
+          type: string
+        connected:
+          type: boolean
+        canOpen:
+          type: boolean
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+
+    SessionStatus:
+      type: string
+      enum: [offline, active, waiting, idle, needs-input]
+
+    SessionsLoaded:
+      description: Privileged session catalogue; unnamed sessions never become office characters.
+      type: object
+      additionalProperties: false
+      required: [type, sessions]
+      properties:
+        type:
+          const: sessionsLoaded
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionEntry'
+
+    SessionActionRejected:
+      type: object
+      additionalProperties: false
+      required: [type, reason]
+      properties:
+        type:
+          const: sessionActionRejected
+        id:
+          type: integer
+        reason:
+          type: string
+
+    SessionOpened:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: sessionOpened
+        id:
+          type: integer
+
+    RequestSessions:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: requestSessions
+
+    SetSessionCharacterName:
+      description: Local character name only; empty hides the character without deleting its session.
+      type: object
+      additionalProperties: false
+      required: [type, id, name]
+      properties:
+        type:
+          const: setSessionCharacterName
+        id:
+          type: integer
+        name:
+          type: string
+          maxLength: 64
+
+    SetSessionArchived:
+      description: Park a named character and stop only its managed CLI, or restore it to the office.
+      type: object
+      additionalProperties: false
+      required: [type, id, archived]
+      properties:
+        type:
+          const: setSessionArchived
+        id:
+          type: integer
+        archived:
+          type: boolean
+
+    OpenSession:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          const: openSession
+        id:
+          type: integer
 
     AgentStatus:
       description: Active vs waiting state for an agent (drives character animation).
@@ -730,7 +860,7 @@ components:
           type: string
           description: >-
             The hook provider this install state is about (HookProvider.id,
-            e.g. "claude"). Consumers keyed on install state must never mix
+            e.g. "copilot"). Consumers keyed on install state must never mix
             one provider's status into another's — the Intro's install
             verdict in particular reads only the provider it asked about.
         installed:
@@ -979,7 +1109,7 @@ components:
           const: webviewReady
 
     LaunchAgent:
-      description: Launch a new Claude agent in a new terminal.
+      description: Launch a new Copilot CLI agent in a new terminal.
       type: object
       additionalProperties: false
       required: [type]
@@ -1173,15 +1303,6 @@ components:
         type:
           const: importLayout
 
-    OpenSessionsFolder:
-      description: Open ~/.claude/projects in the OS file manager.
-      type: object
-      additionalProperties: false
-      required: [type]
-      properties:
-        type:
-          const: openSessionsFolder
-
     AddExternalAssetDirectory:
       description: >-
         Add an external asset directory. In VS Code the host shows a native
@@ -1330,6 +1451,8 @@ components:
       type: object
       additionalProperties: false
       properties:
+        archived:
+          type: boolean
         palette:
           type: integer
         hueShift:

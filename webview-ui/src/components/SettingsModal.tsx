@@ -24,7 +24,7 @@ interface SettingsModalProps {
   /** ACTUAL install state (the hooksStatus message), not the hooksEnabled
    *  preference. The preference defaults to true while first-run consent is
    *  still pending, so binding the checkbox to it renders "on" over an empty
-   *  ~/.claude/settings.json. */
+   *  ~/.copilot/hooks/pixel-agents.json (or COPILOT_HOME/hooks/pixel-agents.json). */
   hooksInstalled: boolean;
   onToggleHooksEnabled: () => void;
   /** Whether the areas overlay is rendered outside of the Areas edit tool. */
@@ -74,17 +74,6 @@ export function SettingsModal({
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Settings">
-      {/* Open Sessions Folder opens an OS file manager — impossible in the browser. */}
-      {!isBrowserRuntime && (
-        <MenuItem
-          onClick={() => {
-            transport.send({ type: 'openSessionsFolder' });
-            onClose();
-          }}
-        >
-          Open Sessions Folder
-        </MenuItem>
-      )}
       <MenuItem
         onClick={() => {
           if (isBrowserRuntime) {

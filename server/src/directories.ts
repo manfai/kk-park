@@ -207,9 +207,7 @@ export interface DirectoryMessageDeps {
   /** Point-to-point reply to the requesting client (`directorySaved`,
    *  `directoryRejected`, `directorySuggestions`). */
   reply: (message: Record<string, unknown>) => void;
-  /** Paths to offer in the Directory modal, recovered from this host's provider
-   *  session transcripts. Injected rather than imported so this module stays
-   *  free of provider knowledge — see directorySuggestions.ts. */
+  /** Optional host-provided paths for the Directory modal. */
   suggestions: () => string[];
 }
 

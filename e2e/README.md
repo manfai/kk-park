@@ -1,368 +1,278 @@
 # Pixel Agents e2e tests
 
-Playwright end-to-end tests for the VS Code extension and the standalone `npx pixel-agents` server. This README is the single source of truth for what's e2e-tested, what's not, and how to run the suite.
+Playwright tests for the VS Code extension and standalone browser office.
+This README is the source of truth for the E2E mocking model and test inventory.
 
 ## What this suite covers
 
-Behavioral overview by area. Each area corresponds to a `test.describe` block in the spec files, an `@area:` tag on each test title, and an Allure `epic` label.
+- **Spawn paths (`@area:spawn`)**: the VS Code launch drawer, workspace
+  Directories, and user-defined Directories.
+- **Cross-cutting checks (`@area:cross-cutting`)**: first-run Intro, hook consent,
+  revision of consent, failed installation, safe hook removal, and truthful Settings.
+- **Standalone (`@area:standalone`)**: enrolled Copilot CLI hook lifecycle,
+  activity, real permission/input waits, reload restoration, close, read-only
+  access, tokened consent, Directories, terminal launch, terminal input/output,
+  verbatim clipboard copy, asset reload, layout import/export, and reconnection.
+  Session-first cases cover hidden unnamed history/running/new sessions, local
+  character names, confirmed cage confinement and managed CLI shutdown, same-project session separation,
+  exact resume across terminal restarts, and visible open rejection.
+- **Layout editor (`@area:editor`)**: selection, furniture movement/copy,
+  floor/wall/erase strokes, stroke-scoped undo, and furniture deletion.
+- **Areas (`@area:areas`)**: zoning, Directory mappings, seating, and persistence.
+- **Carpet (`@area:carpet`)**: placement, paint, erase, and undo.
+- **Pets (`@area:pets`)**: loading, placement, toggle, persistence, and heart bubbles.
+- **Mobile (`@area:mobile`)**: phone shell, card navigation, terminal launch,
+  edge swipes, links, copy/paste, selection, trackpad, and camera gestures.
 
-### Spawn paths (`@area:spawn`)
+Canvas-only outcomes use the read-only test hooks installed by the E2E flag.
+Agent lifecycle and activity must enter through the process boundary below,
+never by mutating OfficeState.
 
-Agents being created and adopted. Covers internal terminals launched by clicking `+ Agent`, external Claude sessions adopted by the hook server or the JSONL scanner, basic Task subagent appearance/despawn, and lead+teammate routing for inline and tmux team modes.
+## Mocking model & rules
 
-### Lifecycle regressions (`@area:lifecycle`)
+Terminal-driven tests launch the mock **`copilot` process**, not a real AI CLI.
+The isolated PATH contains `e2e/fixtures/mock-copilot` (or its Windows shim),
+which runs `mock-copilot-runner.cjs`. It claims a queued scenario, receives the
+real launch `--session-id` or `--resume` ID, and executes the **installed real bridge**
+`~/.pixel-agents/hooks/copilot-hook.js` using the entries in
+`$COPILOT_HOME/hooks/pixel-agents.json`.
 
-Edge cases that historically caused agent-character desync: `/clear`, `--resume`, X-button close, dismissal cooldown, parallel sub-agents, teammate add/remove, rapid `/clear` followed by a new tool, late resume after stale cleanup.
+Every test uses isolated HOME, USERPROFILE, and COPILOT_HOME directories under
+the repository's ignored test-results directory. No real account, network AI
+request, or personal hooks configuration is used. There is **no transcript
+fallback**, transcript fixture, team simulation, or context-usage simulation.
 
-### Cross-cutting checks (`@area:cross-cutting`)
+Rules for a correct test:
 
-Invariants that should hold across every spawn path: tool status text matches the active tool name, sound chimes fire on the right events, restored agents skip the matrix spawn animation, hook installer preserves third-party hooks, settings persist across webview reload, sub-agent permission timer fires, layout editor enter/paint/save/exit smoke.
+1. **Drive terminal behavior through a scenario.** Use `copilotScenario(name)`,
+   `.at(milliseconds).emitHook(payload)`, `.holdOpenFor(milliseconds)`, and
+   `.build()`, then `arrangeNextCopilotInvocation(home, scenario)` before launching.
+   Scenarios automatically emit `sessionStart` with `source: startup` (`resume`
+   for resumed sessions) and
+   `sessionEnd` with `reason: user_exit`; `.withoutAutoInit()` opts out of startup.
+2. **Emit the documented Copilot payload.** The scenario's `hook_event_name`
+   selects the bridge argument and is not part of Copilot's stdin payload.
+   Payload fields are `sessionId`, `cwd`, `toolName`, and `toolArgs`; optional
+   `toolCallId` correlates tools. Event names are `sessionStart`, `sessionEnd`,
+   `userPromptSubmitted`, `preToolUse`, `postToolUse`, `postToolUseFailure`,
+   `agentStop`, and `notification`. Notifications carry `notification_type:
+permission_prompt` or `elicitation_dialog` for actual waits. Child-agent
+   events are not supported.
+3. **Enrollment is explicit.** Office launches set `PIXEL_AGENTS_COPILOT=1`
+   and `PIXEL_AGENTS_COPILOT_SESSION_ID` to the launch UUID. External mock
+   scenarios set the same variables. Unenrolled CLI processes and native Chat
+   do not report activity.
+4. **Assert visible outcomes.** Use overlays, cards, dialogs, xterm output,
+   and canvas observability. The mock never decides pass/fail.
+5. **Standalone server-level exception.** `helpers/hooks.ts:sendHookEvent`
+   may POST normalized events directly for server/WebSocket integration tests.
+   Prefer real bridge subprocesses, as in `standalone/copilot.spec.ts`.
+   Terminal-driven tests must use the scenario builder, not manual hook POSTs.
+6. **Name sessions through the UI.** Every unnamed session stays hidden,
+   including running office launches and discovered history. `clickAddAgent`
+   uses Sessions to launch, save a local `Agent N` name, and explicitly Open.
+   `helpers/sessions.ts` exposes launch-only and naming helpers for tests of
+   that boundary. Names do not change Copilot's own title. Archive requires
+   confirmation, stops only the associated managed mock CLI, and keeps the named
+   character standing inside the nearest reachable empty Jail Cage, one per cage.
+   Missing/full cages disable Archive; restore/resume frees the cage. Never delete its
+   conversation metadata or stop an unrelated/external process. Seed cages
+   through layout fixtures, and assert confinement via read-only character snapshots.
+7. **Seed only provider metadata for history.** The mock writes the first
+   `session.start` record to isolated
+   `$COPILOT_HOME/session-state/<id>/events.jsonl`, with
+   `data.context.cwd` set to its absolute working directory.
+   `seedSessionMetadata` writes that same fixture format for offline history;
+   discovery reads only its first record. Never seed internal agent state.
 
-### Teams routing (`@area:teams`)
+Example:
 
-Lead and teammate tool routing in both inline and tmux team modes, internal and external.
-
-### Hooks-off matrix (`@area:matrix`)
-
-Every spawn permutation (internal vs external origin × basic vs inline-teammate vs tmux-teammate mode) re-verified against the heuristic JSONL-polling path with the hook server disabled. Confirms the polling-based detection produces the same agent state as the hook-driven path.
-
-### Standalone server (`@area:standalone`)
-
-The `npx pixel-agents` CLI path: hook-driven lifecycle propagates from the local server into the browser SPA via the single `/ws` WebSocket endpoint.
-
-### Pet system (`@area:pets`)
-
-The animated pets feature, which has no hook dependency. Pet sprites load and the `petSpritesLoaded` broadcast arrives with manifest display names; placing a pet from the Pets-tab carousel toggles it on/off and persists across a panel reload via `~/.pixel-agents/layout.json`; clicking a pet shows a heart bubble that auto-dismisses and dismisses again on re-click. Pets render only on the canvas, so live state is read through the `getPets` / `petClick` e2e test hooks. FSM internals, pathfinding, FOLLOW, z-sort, and legacy-layout migration are covered by webview unit tests, not e2e.
-
-### Layout editor (`@area:editor`)
-
-Erase semantics and stroke-based undo in the layout editor. The erase tool clears a tile to VOID **and** deletes any furniture whose footprint the stroke passes through (left-click and right-drag entry points both covered, plus the negative case where an item away from the stroke survives). Undo is stroke-scoped: one click-drag of floor paint, wall paint, or erase collapses to a single undo entry, and a mouse-up splits consecutive strokes into separate entries. Tiles render only on the canvas, so state is read through the `getTiles` / `getFurniture` e2e test hooks; stroke boundaries go through a real canvas `mouseup` rather than a hook, since "every edit collapses into one undo entry" is the regression being guarded. Carpet's equivalent stroke-undo test lives in `@area:carpet`.
-
-### Mobile shell (`@area:mobile`)
-
-The standalone page on a phone-sized touch viewport (390×844, `hasTouch`): the mobile shell renders instead of the desktop toolbar; the + card launches an agent into the server PTY and slides to its terminal; the >_ / Office toggle, the two-step card tap (focus, then open), and the edge swipe in both directions switch pages; tapping a URL in the terminal opens it. Taps use Playwright's real touch input; the edge swipe dispatches the TouchEvent sequence of a finger drag, since `touchscreen` has no multi-step drag. The gesture state machines (edge swipe, terminal touch, card order) are unit-tested on the webview Node runner. That the VS Code webview never renders the mobile shell is pinned by the VS Code fixture itself, which waits for the desktop toolbar's `+ Agent` button.
-
-## What's NOT covered (gaps + deferred)
-
-Scenarios that exist as product behavior but are not in the automated suite. PRs that close a gap should remove the corresponding row.
-
-| Scenario                                                                                 | Why not automated                                                                                                                            | Tracked                      |
-| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| Multi-window `layout.json` cross-sync                                                    | Needs two VS Code instances simultaneously; fixture work                                                                                     | none                         |
-| External asset directory add/remove via Settings                                         | Needs bundled test asset packs                                                                                                               | none                         |
-| Bypass-permissions startup flag                                                          | Security-sensitive; manual review path                                                                                                       | none                         |
-| Workspace folder add/remove mid-session                                                  | Edge case; infra-heavy                                                                                                                       | none                         |
-| Heuristic-timer cancellation after **internal-terminal** agent close                     | VS Code terminal panel collapse races the canvas click on the X overlay; covered via the external-agent variant which dodges the layout race | external variant in suite    |
-| Mobile key bar (esc, shift+tab, trackpad, paste) above the software keyboard             | Only shows while the iOS/Android keyboard shrinks the visual viewport; headless browsers have no software keyboard                           | manual (phone)               |
-| Terminal long-press selection, copy pill, handles, flick scroll; canvas pinch zoom       | Multi-touch timing gestures; the decision logic is unit-tested (`touchGesture`, `edgeSwipe`), the device feel is not                         | manual (phone)               |
-| Mobile card bar long-press reorder                                                       | Long-press + drag on a horizontal scroller; ordering rules unit-tested (`cardBar.test.ts`)                                                   | manual (phone)               |
-| Producer/viewer relay scenarios (multi-viewer replay, producer reconnect reconciliation) | Producer endpoint not yet built                                                                                                              | `feat/producer-viewer-split` |
-
-## Pre-release manual smoke (~30 min)
-
-CI green on this suite is the safety net for behavioral regressions. The checks below are what e2e can't meaningfully assert on (visual polish, real-Claude integration, cross-process behaviors). Run them before tagging a Marketplace release — not on every PR.
-
-**Visual + interactive polish** (after any change touching `renderer.ts`, `spriteCache.ts`, `colorize.ts`, `*.tsx`, CSS, or `editorActions.ts`):
-
-- Pan around the office with middle-mouse drag — characters z-sort correctly against same-row chairs and lower-row desks, no flicker.
-- Spawn 3+ agents — matrix spawn animation renders cleanly, characters move smoothly between seats.
-- Open the Layout editor — paint floor with HSBC sliders, place + rotate (R) furniture, toggle on/off (T) state, drag-to-move in SELECT, multi-stage Esc unwinds correctly.
-- Hover and click characters — overlay text positioning is correct, selection outline crisp, click on a seat reassigns.
-
-**Real Claude Code integration** (mock-claude is a fixture; real Claude's JSONL has edge cases the mock doesn't):
-
-- Launch the Extension Development Host (F5), click + Agent, ask Claude to do a few tool-heavy turns and a permission-requiring tool. Watch for character desync, missing animations, stuck permission bubbles.
-- Use a session with a large pasted image (multi-MB base64 user message) — confirm the "Possible format issue" warning doesn't false-fire and tool tracking still works.
-- Test with one MCP server installed — confirm `mcp_progress` records don't break tool status.
-
-**`npx pixel-agents` standalone** (e2e covers Chrome via Playwright; verify other browsers + real workflow):
-
-- `node dist/cli.js` (or `npx pixel-agents` after publish), open `http://localhost:3100` in Firefox AND Safari, run a real Claude session in a terminal — confirm characters appear and animate via WebSocket.
-- Refresh the browser mid-session — WebSocketTransport reconnects, agents reappear from server state.
-
-**Cross-window sync** (rarely covered by CI, easy to break):
-
-- Open two VS Code windows. Edit the layout in one (paint a tile, save). Within ~2 s the other window picks it up.
-
-**First-run experience** (before publishing):
-
-- Delete `~/.pixel-agents/` entirely. Launch the extension fresh — default layout loads, first-run tooltip appears, no console errors, hooks auto-install on first agent spawn.
-
-**Platform sanity** (CI hosts ≠ your machine):
-
-- On the OS you primarily develop on, run a normal session for ~5 minutes — confirm no surprise CPU spikes, no leaked file watchers, panel reload doesn't lose state.
-
-Skip the F5 matrix walk-through that used to take hours — the e2e suite covers it. Hand-driven testing now exists only to catch what automated assertions structurally can't see.
+```typescript
+await arrangeNextCopilotInvocation(
+  standalone.tmpHome,
+  copilotScenario('read a file')
+    .at(1_000)
+    .emitHook({
+      hook_event_name: 'preToolUse',
+      sessionId: '{{sessionId}}',
+      cwd: '{{cwd}}',
+      toolName: 'view',
+      toolArgs: { path: 'example.ts' },
+    })
+    .holdOpenFor(60_000)
+    .build(),
+);
+await clickAddAgent(page);
+await expectOverlayVisible(page, 'Reading example.ts');
+```
 
 ## Running
 
 ```bash
-cd pixel-agents
-npm run compile && npm run e2e               # full suite (~10 min)
-
-npm run e2e -- --grep "@area:spawn"          # filter by area tag
-npm run e2e -- --grep "@area:cross-cutting"
-npm run e2e -- --headed                      # watch chromium for standalone test
-
-npm run e2e:inventory                        # regenerate the inventory section below
-npm run test:report                          # build the Allure dashboard from latest run
-npm run test:report:open                     # serve + open the Allure dashboard in a browser
+npm run compile
+npm run e2e -- e2e/tests/standalone --workers=1  # headless browser only
+npx tsc --noEmit -p e2e/tsconfig.json --skipLibCheck
+npm run e2e:inventory
+npm run test:report
+npm run test:report:open
 ```
 
-## Mocking model & rules
+**VS Code tests require explicit user approval before execution.** They open
+real Electron windows and steal focus. Never run them from a sub-agent.
+After approval, run them once at the end of implementation:
 
-E2E tests drive Pixel Agents through a Claude-like **process boundary**, not by poking internals. The mocked `claude` (`e2e/fixtures/mock-claude` → `mock-claude-runner.cjs`) behaves like the real CLI for the parts Pixel Agents observes: it spawns as a process, creates its own append-only JSONL transcripts, and executes the installed hook script under `~/.pixel-agents/hooks` — the same path the real CLI uses. The builder API itself (`claudeScenario(...)`, `.at()`, `.appendJsonl()`, `.emitHook()`, `.holdOpenFor()`) is documented in CONTRIBUTING.md → "Mock claude".
+```bash
+npm run e2e -- e2e/tests/copilot --workers=1
+```
 
-Rules for a correct test:
+The terminal-launch tests skip Windows until PTY execution of the `.cmd` shim
+is verified. Non-terminal standalone tests continue to cover Windows.
 
-- **Drive behavior through a scenario, not by hand.** Define timed actions with the `claudeScenario(...)` builder and let the mock perform them. Don't hand-write transcript files or hand-fire hooks inside a terminal-driven test body.
-- **Transcripts are append-only.** Existing JSONL lines are never mutated in place; new records appear later in the stream. Scenarios model this with timed `.appendJsonl(...)` steps.
-- **Assert only on Playwright-visible outcomes** — agent overlays, character state, sound hooks — never on the mock's internals. The mock never decides pass/fail.
-- **Standalone is the one exception.** `standalone/hooks.spec.ts` has no VS Code terminal to host a mocked `claude`, so it POSTs to the server's hook endpoint directly via `sendHookEvent`. That is correct _only_ for the standalone-server path; every terminal-driven test must use the scenario builder.
+## What's NOT covered
 
-## What to read before adding a test
-
-- `pixel-agents/CLAUDE.md` — architecture and message protocol
-- `pixel-agents/e2e/fixtures/pixel-agents.ts` — fixture lifecycle
-- `pixel-agents/e2e/helpers/` — every helper, especially `hooks.ts`, `mock-claude.ts`, `office.ts`, `webview.ts`
-
-When you add a new test:
-
-- Pick a `test.describe` block that matches an existing `@area:` tag, OR add a new area to the "What this suite covers" section above and pick a tag.
-- Add `@area:<tag>` to the test title.
-- Add Allure `epic` / `feature` / `story` labels matching the area.
-- Run `npm run e2e:inventory` and commit the regenerated section.
-
-When you remove a test:
-
-- Run `npm run e2e:inventory` so the inventory drops it.
-- If the scenario it tested is now manual or deferred, add a row to "What's NOT covered".
+- Child-agent routing and context usage are not implemented.
+- Mobile software-keyboard behavior, long-press reorder, and device gesture feel
+  need a real-phone smoke check.
+- Multi-window layout sync needs two editor instances.
+- Real Copilot CLI compatibility should be smoke-tested before release with
+  an explicitly enrolled process; the mock never authenticates or calls a model.
+- Firefox and Safari need manual standalone smoke checks.
 
 ## Narration
 
-Every VS Code run video is narrated. The narrator writes one yellow `[test]` line per
-action taken and per assertion verified to a per-test log, and several surfaces
-display it by simply tailing that log:
+VS Code recordings tail `<isolated HOME>/.copilot-mock/test-narration.log` and
+`external-narration.log` into the monitor terminal and mock terminal tabs.
+`narrator.step()` and `narrator.check()` are cosmetic only: removing them must
+not change assertions, behavior, or timing. Pixel Agents observes hooks, not
+terminal narration. Standalone recordings are raw browser artifacts.
 
-```
-narrate.step()/check()  ──►  <tmpHome>/.claude-mock/test-narration.log     (yellow [test])
-external mock stdout     ──►  <tmpHome>/.claude-mock/external-narration.log (magenta [external·tag])
+## Adding or removing tests
 
-Surface A — the "e2e monitor" terminal: opened by the fixture after VS Code
-            finishes restoring the review layout (openMonitorTerminal). Tails
-            BOTH logs, so even a test with no agents has a narrated surface
-            from its first action.
-Surface B — every mock-claude terminal tab: the wrapper backgrounds a headerless
-            tail of both logs into its own stdout, interleaved with the runner's
-            cyan [mock-claude] lines. Whichever tab has focus, the full story
-            shows. Because the tail starts at byte 0, a tab opened mid-test
-            replays the whole story so far.
-```
-
-Standalone recordings are deliberately raw browser artifacts. Their fixture has
-no VS Code terminal or narration surface, so the eight standalone videos are
-outside this narration contract.
-
-Usage: the `pixelAgents` fixture exposes a `narrator` on its payload — tests call
-`narrator.step('…')` before an action and `narrator.check('…')` after an
-assertion resolves. Shared helpers narrate universal moments (spawning/closing an
-agent) via the module-level `narrate` in `helpers/test-narration.ts`.
-
-**Cosmetic-only contract (never violate):** Pixel Agents never reads terminal
-output — its inputs are JSONL transcripts and hook POSTs — so narration cannot
-change what a test exercises. Narration must **never carry an assertion, gate
-logic, or affect timing**. Deleting every `step`/`check` call must leave all
-tests passing. Never call the narrator from inside a browser-context callback
-(`frame.waitForFunction`/`evaluate`/`.poll`) — it is Node-side only. Never add a
-`waitForTimeout` for narration's sake. After the test body is complete, the
-fixture may wait for the final narration marker to render before closing the
-recorded window; that teardown-only synchronization cannot gate test behavior.
+Read the mocking rules above, the applicable fixture, and shared helpers first.
+Use an existing `@area:` tag or document a new one here and in
+`helpers/allure-labels.ts`. Regenerate the inventory after adding, moving, or
+removing tests.
 
 ## Test inventory
 
-This section is auto-generated. Do not edit between the markers; CI fails on drift.
+This section is auto-generated. Do not edit between the markers.
 
 <!-- BEGIN:E2E-INVENTORY -->
 
-138 tests total. Generated by `scripts/generate-e2e-inventory.mjs`. Re-run after adding or removing tests.
+90 tests total. Generated by `scripts/generate-e2e-inventory.mjs`. Re-run after adding or removing tests.
 
-### `@area:spawn` (5 tests)
+### `@area:spawn` (3 tests)
 
-- `e2e/claude/hooks-off/launch-drawer.spec.ts:40` — hovering + Agent opens a drawer with a badged, read-only row per workspace folder (Launch drawer (multi-root))
-- `e2e/claude/hooks-off/launch-drawer.spec.ts:63` — tapping a drawer row launches an agent labeled with that Directory (Launch drawer (multi-root))
-- `e2e/claude/hooks-off/launch-drawer.spec.ts:80` — a Directory defined in the office joins the drawer, launches, and survives a panel reload (Launch drawer (multi-root))
-- `e2e/claude/hooks-on/basic.spec.ts:34` — internal terminal spawns agent and Task subagent appears then despawns (Hooks ON / spawn paths)
-- `e2e/claude/hooks-on/basic.spec.ts:125` — external Claude session adopted via hook confirmation lifecycle (Hooks ON / spawn paths)
+- `e2e/copilot/launch-drawer.spec.ts:40` — hovering + Agent opens a drawer with a badged, read-only row per workspace folder (Launch drawer (multi-root))
+- `e2e/copilot/launch-drawer.spec.ts:63` — tapping a drawer row launches an agent labeled with that Directory (Launch drawer (multi-root))
+- `e2e/copilot/launch-drawer.spec.ts:80` — a Directory defined in the office joins the drawer, launches, and survives a panel reload (Launch drawer (multi-root))
 
-### `@area:lifecycle` (22 tests)
+### `@area:cross-cutting` (10 tests)
 
-- `e2e/claude/hooks-off/lifecycle.spec.ts:59` — /clear on internal agent reassigns the same character via JSONL polling (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:137` — /resume at startup reassigns the same agent via JSONL polling (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:183` — /clear edge case with a sibling agent in the same projectDir via JSONL polling (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:268` — /clear retains its character after the terminal editor moves (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:346` — heuristic late --resume after stale cleanup prevents zombie agents (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:410` — three parallel Task subagents in one turn render distinct sub-characters via polling (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:478` — inline teammate removed from team config disappears within one second via polling (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:540` — rapid /clear then new tool within 500ms lands on the reassigned agent via polling (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:601` — close via X prevents re-adoption of old JSONL during dismissal cooldown via polling (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:675` — external basic subagent with run_in_background but no teamName routes to basic path (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:83` — /clear on internal agent reassigns the same character to the new JSONL (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:145` — /resume reassigns the same agent within the grace window (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:212` — /clear edge case with a sibling agent in the same projectDir (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:303` — --resume after the grace window expires cleans up the old agent (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:388` — three parallel Task subagents in one turn render distinct sub-characters (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:457` — inline teammate removed from team config disappears within one second (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:519` — lead SessionEnd cascade-removes active inline teammates (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:605` — external basic subagent with run_in_background routes to basic path (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:674` — lead permission_prompt routes bubble to teammate not lead when teammates exist (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:763` — TeammateIdle marks only the targeted teammate done and leaves lead unchanged (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:877` — rapid /clear then new tool within 500ms lands on the reassigned agent (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:935` — close via X prevents re-adoption of old JSONL during dismissal cooldown (Hooks ON / lifecycle)
+- `e2e/copilot/consent.spec.ts:37` — fresh install discloses the Copilot hook file and installs only after consent (Hooks consent gate)
+- `e2e/copilot/consent.spec.ts:56` — Not Now leaves the hook file untouched and consent unanswered (Hooks consent gate)
+- `e2e/copilot/consent.spec.ts:69` — Don't Ask Again leaves the hook file untouched and persists hooks off (Hooks consent gate)
+- `e2e/copilot/consent.spec.ts:79` — closing the Intro sends no consent and does not persist hooks off (Hooks consent gate)
+- `e2e/copilot/consent.spec.ts:91` — Back lets Don't Ask Again undo an installed hook file (Hooks consent gate)
+- `e2e/copilot/consent.spec.ts:106` — Back after Don't Ask Again lets Not Now restore unanswered consent (Hooks consent gate)
+- `e2e/copilot/consent.spec.ts:121` — a stray office click neither answers nor dismisses the Intro (Hooks consent gate)
+- `e2e/copilot/consent.spec.ts:134` — failed install preserves the file and Not Now revokes the failed grant (Hooks consent gate › when the hook file cannot be parsed)
+- `e2e/copilot/consent.spec.ts:151` — the toggle removes only our hook file and preserves unrelated hook files (Hooks Settings removal)
+- `e2e/copilot/consent.spec.ts:164` — refusing removal of a modified hook file does not persist hooks off (Hooks Settings removal)
 
-### `@area:cross-cutting` (24 tests)
+### `@area:standalone` (31 tests)
 
-- `e2e/claude/hooks-off/lifecycle.spec.ts:735` — agentToolsClear fires at turn end via turn_duration JSONL record (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:800` — heuristic permission timer is cancelled when an agent is closed via overlay (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-off/lifecycle.spec.ts:879` — sub-agent permission bubble fires on stalled non-exempt sub-tool via heuristic timer (Hooks OFF / lifecycle)
-- `e2e/claude/hooks-on/consent.spec.ts:125` — fresh install: the Intro pages to the disclosure and Install writes the hooks (Hooks consent gate)
-- `e2e/claude/hooks-on/consent.spec.ts:217` — Not Now writes nothing, continues the tour, and leaves consent ungranted (Hooks consent gate)
-- `e2e/claude/hooks-on/consent.spec.ts:244` — Don't Ask Again writes nothing and persists hooks off (Hooks consent gate)
-- `e2e/claude/hooks-on/consent.spec.ts:269` — the close x aborts the tour and writes nothing, exactly like Not Now (Hooks consent gate)
-- `e2e/claude/hooks-on/consent.spec.ts:298` — Back from the closing step lets Don't Ask Again undo a landed install (Hooks consent gate)
-- `e2e/claude/hooks-on/consent.spec.ts:334` — Back after Don't Ask Again lets Not Now bring the ask back (Hooks consent gate)
-- `e2e/claude/hooks-on/consent.spec.ts:381` — a failed install is reported, and Not Now brings the ask back (Hooks consent gate › when settings.json cannot be parsed)
-- `e2e/claude/hooks-on/consent.spec.ts:427` — clicking the office around the bubble neither answers nor dismisses (Hooks consent gate)
-- `e2e/claude/hooks-on/consent.spec.ts:464` — a pre-consent 14-event install migrates to 12 with no prompt (Hooks consent gate / pre-consent install)
-- `e2e/claude/hooks-on/consent.spec.ts:504` — Settings toggle removes the migrated hooks and keeps third-party entries (Hooks consent gate / pre-consent install)
-- `e2e/claude/hooks-on/consent.spec.ts:555` — a failed uninstall does not persist hooks-off (Hooks consent gate / toggle-off failure)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1034` — done sound chime fires on agentStatus waiting (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1127` — restored agents skip the matrix spawn animation (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1211` — tool status text matches every PreToolUse tool name (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1306` — permission sound chime fires on agentToolPermission (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1428` — pixel-agents hook is installed in settings.json on extension startup (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1450` — hook install and uninstall round-trip via the Settings toggle (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1504` — permission bubble auto-clears when a fresh PreToolUse arrives (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1578` — settings toggles persist across a webview reload (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1626` — layout editor enter paint save persist and exit round-trip (Hooks ON / lifecycle)
-- `e2e/claude/hooks-on/lifecycle.spec.ts:1707` — hook uninstall preserves a pre-existing third-party hook entry (Hooks ON / lifecycle)
-
-### `@area:teams` (7 tests)
-
-- `e2e/claude/hooks-on/teams.spec.ts:64` — internal terminal lead with inline teammate routes tools to teammate (Hooks ON / teams)
-- `e2e/claude/hooks-on/teams.spec.ts:121` — internal terminal lead with tmux teammate routes tools to teammate (Hooks ON / teams)
-- `e2e/claude/hooks-on/teams.spec.ts:195` — new-harness background agent becomes a named teammate character (Hooks ON / teams)
-- `e2e/claude/hooks-on/teams.spec.ts:287` — unnamed background spawn stays a sub-agent with live activity and survives Stop (Hooks ON / teams)
-- `e2e/claude/hooks-on/teams.spec.ts:358` — named background spawn becomes a teammate and badges the spawner LEAD (Hooks ON / teams)
-- `e2e/claude/hooks-on/teams.spec.ts:422` — external session lead with inline teammate routes tools to teammate (Hooks ON / teams)
-- `e2e/claude/hooks-on/teams.spec.ts:494` — external session lead with tmux teammate routes tools to teammate (Hooks ON / teams)
-
-### `@area:matrix` (6 tests)
-
-- `e2e/claude/hooks-off/matrix.spec.ts:49` — internal basic spawn adopted via JSONL polling (Hooks OFF / matrix)
-- `e2e/claude/hooks-off/matrix.spec.ts:87` — internal inline teammate adopted via JSONL polling (Hooks OFF / matrix)
-- `e2e/claude/hooks-off/matrix.spec.ts:143` — internal tmux teammate adopted via JSONL polling (Hooks OFF / matrix)
-- `e2e/claude/hooks-off/matrix.spec.ts:208` — external basic spawn adopted via JSONL polling (Hooks OFF / matrix)
-- `e2e/claude/hooks-off/matrix.spec.ts:253` — external inline teammate adopted via JSONL polling (Hooks OFF / matrix)
-- `e2e/claude/hooks-off/matrix.spec.ts:312` — external tmux teammate adopted via JSONL polling (Hooks OFF / matrix)
-
-### `@area:standalone` (28 tests)
-
+- `e2e/copilot/multi-server-hooks.spec.ts:31` — extension and standalone both stay hook-driven without cross-contamination (VS Code and standalone / multi-server hooks)
+- `e2e/standalone/copilot.spec.ts:17` — observes enrolled Copilot CLI hooks without tracking native Chat (Standalone / Copilot CLI)
 - `e2e/standalone/directory-modal.spec.ts:44` — Enter on Cancel cancels and Enter on an Area toggles it; neither saves (Standalone / Directory modal keyboard)
 - `e2e/standalone/directory-modal.spec.ts:78` — Enter in the path field saves (Standalone / Directory modal keyboard)
 - `e2e/standalone/directory-modal.spec.ts:99` — an unnamed Directory keeps its Area under the name the host gave it (Standalone / Directory Area mapping)
-- `e2e/standalone/hooks.spec.ts:20` — propagates hook-driven lifecycle into the browser UI (Standalone / hooks)
+- `e2e/standalone/hooks.spec.ts:22` — propagates hook-driven lifecycle into the browser UI (Standalone / hooks)
 - `e2e/standalone/hooks.spec.ts:137` — the tokened page shows the Intro and Install writes the hooks (Standalone / hooks consent)
-- `e2e/standalone/hooks.spec.ts:164` — an untokened spectator page never sees the consent dialog (Standalone / hooks consent)
-- `e2e/standalone/hooks.spec.ts:186` — an untokened spectator page shows no toolbar, only a View only label (Standalone / hooks consent)
-- `e2e/standalone/hooks.spec.ts:213` — the hooks checkbox reflects install state and its click is the consent grant (Standalone / hooks consent)
-- `e2e/standalone/launch-drawer.spec.ts:45` — the server start directory is a badged host row that launches an agent labeled with it (Standalone / launch drawer)
-- `e2e/standalone/launch-drawer.spec.ts:97` — a Directory added in the modal launches an agent and is still there after a reload (Standalone / user-defined Directories)
-- `e2e/standalone/launch-drawer.spec.ts:152` — deleting a Directory drops its row and leaves its running agent alone (Standalone / user-defined Directories)
-- `e2e/standalone/launch-drawer.spec.ts:204` — an invalid path is refused inline and nothing is persisted (Standalone / Directory validation)
-- `e2e/standalone/launch-drawer.spec.ts:253` — a past session offers its working directory as a tap that fills the path (Standalone / Directory suggestions)
-- `e2e/standalone/launch-drawer.spec.ts:309` — the start directory is hidden by default and Show Start Directory lists it (Standalone / host Directory setting)
-- `e2e/standalone/launch-drawer.spec.ts:341` — the skip-permissions setting lands on disk and survives a reload (Standalone / permission posture)
-- `e2e/standalone/launch-drawer.spec.ts:377` — turning skip-permissions on in one office shows it on in another already open (Standalone / permission posture)
-- `e2e/standalone/launch-drawer.spec.ts:432` — the drawer fits the viewport, its rows scroll, and + Directory stays reachable (Standalone / long Directory lists)
-- `e2e/standalone/multi-server-hooks.spec.ts:31` — extension and standalone both stay hook-driven without cross-contamination (Standalone / multi-server hooks)
-- `e2e/standalone/terminal.spec.ts:26` — browser-launched agent gets a PTY terminal, hooks route to its character, close cleans up (Standalone / terminal)
-- `e2e/standalone/terminal.spec.ts:82` — every tab takes mouse input, and a narrow window keeps the cards and close reachable (Standalone / terminal)
-- `e2e/standalone/terminal.spec.ts:117` — copies are verbatim; Alt+C copies the selection re-flowed as text (Standalone / terminal)
-- `e2e/standalone/terminal.spec.ts:214` — --no-terminal keeps the office watch-only: launch disabled, hook-driven agents still render (Standalone / terminal disabled)
-- `e2e/standalone/ui.spec.ts:27` — closeAgent despawns the character (Standalone / UI)
-- `e2e/standalone/ui.spec.ts:61` — Debug View renders JSONL diagnostics in standalone (Standalone / UI)
-- `e2e/standalone/ui.spec.ts:95` — adding an external asset directory triggers a live asset reload (Standalone / UI)
-- `e2e/standalone/ui.spec.ts:125` — browser Export Layout downloads the layout file (Standalone / UI)
-- `e2e/standalone/ui.spec.ts:140` — browser Import Layout applies the chosen file (Standalone / UI)
-- `e2e/standalone/ui.spec.ts:175` — ConnectionIndicator appears when the WebSocket connection drops (Standalone / UI)
+- `e2e/standalone/hooks.spec.ts:168` — an untokened spectator page never sees the consent dialog (Standalone / hooks consent)
+- `e2e/standalone/hooks.spec.ts:190` — an untokened spectator page shows no toolbar, only a View only label (Standalone / hooks consent)
+- `e2e/standalone/hooks.spec.ts:217` — the hooks checkbox reflects install state and its click is the consent grant (Standalone / hooks consent)
+- `e2e/standalone/launch-drawer.spec.ts:33` — the server start Directory is read-only and launches a named character with its folder context (Standalone / session launch Directories)
+- `e2e/standalone/launch-drawer.spec.ts:53` — a Directory added in the modal launches an agent and is still there after a reload (Standalone / user-defined Directories)
+- `e2e/standalone/launch-drawer.spec.ts:75` — deleting a Directory drops its option and leaves its running agent alone (Standalone / user-defined Directories)
+- `e2e/standalone/launch-drawer.spec.ts:97` — an invalid path is refused inline and nothing is persisted (Standalone / Directory validation)
+- `e2e/standalone/launch-drawer.spec.ts:115` — the start Directory is hidden by default and Show Start Directory lists it (Standalone / host Directory setting)
+- `e2e/standalone/launch-drawer.spec.ts:134` — the skip-permissions setting lands on disk and survives a reload (Standalone / permission posture)
+- `e2e/standalone/launch-drawer.spec.ts:148` — turning skip-permissions on in one office shows it on in another already open (Standalone / permission posture)
+- `e2e/standalone/launch-drawer.spec.ts:183` — the Sessions manager fits the viewport, its Directory selector reaches the last option and + Directory stays reachable (Standalone / long Directory lists)
+- `e2e/standalone/sessions.spec.ts:48` — unnamed sessions stay hidden; Archive confirms, preserves named characters and history, and stops the managed CLI (Standalone / session-first office)
+- `e2e/standalone/sessions.spec.ts:200` — two named sessions in the same project keep separate characters and resume the exact session across terminal restarts (Standalone / session-first office)
+- `e2e/standalone/terminal.spec.ts:37` — browser-launched named agent gets a PTY, and confirmed Archive stops it while retaining its character (Standalone / terminal › Archive parking)
+- `e2e/standalone/terminal.spec.ts:102` — Archive explains missing cage and cannot stop the running CLI (Standalone / terminal › Missing cage)
+- `e2e/standalone/terminal.spec.ts:124` — every tab takes mouse input, and a narrow window keeps the cards and close reachable (Standalone / terminal)
+- `e2e/standalone/terminal.spec.ts:160` — copy preserves line breaks and indentation verbatim (Standalone / terminal)
+- `e2e/standalone/terminal.spec.ts:254` — --no-terminal disables new launches but still manages named hook-driven agents (Standalone / terminal disabled)
+- `e2e/standalone/ui.spec.ts:32` — Archive confines one character per cage, persists across reload and releases on restore (Standalone / UI › Archive parking)
+- `e2e/standalone/ui.spec.ts:133` — Debug View shows hook delivery diagnostics (Standalone / UI)
+- `e2e/standalone/ui.spec.ts:161` — adding an external asset directory triggers a live asset reload (Standalone / UI)
+- `e2e/standalone/ui.spec.ts:191` — browser Export Layout downloads the layout file (Standalone / UI)
+- `e2e/standalone/ui.spec.ts:206` — browser Import Layout applies the chosen file (Standalone / UI)
+- `e2e/standalone/ui.spec.ts:241` — ConnectionIndicator appears when the WebSocket connection drops (Standalone / UI)
 
 ### `@area:areas` (10 tests)
 
-- `e2e/claude/hooks-off/areas-multiroot.spec.ts:84` — painting an area labels tiles in the layout (Areas (multi-root))
-- `e2e/claude/hooks-off/areas-multiroot.spec.ts:112` — areas can be added and removed (Areas (multi-root))
-- `e2e/claude/hooks-off/areas-multiroot.spec.ts:145` — a folder can be mapped to an area and the mapping persists (Areas (multi-root))
-- `e2e/claude/hooks-off/areas-multiroot.spec.ts:180` — an agent for the MAPPED folder takes a seat inside its area (Areas (multi-root) › seat preference (alpha → Engineering))
-- `e2e/claude/hooks-off/areas-multiroot.spec.ts:211` — an agent for an UNMAPPED folder is not forced into the area (Areas (multi-root) › seat preference (alpha → Engineering))
-- `e2e/claude/hooks-off/areas-multiroot.spec.ts:255` — a Directory assigned an Area in its modal seats the agent it launches inside that Area (Areas (multi-root) › Area assignment from the Directory modal)
-- `e2e/claude/hooks-off/areas-multiroot.spec.ts:308` — renaming a Directory carries its Area mapping to the new name (Areas (multi-root) › Area assignment from the Directory modal › rename)
-- `e2e/claude/hooks-off/areas.spec.ts:40` — seeded areas + areaTiles load and showAreas is effective (Areas (single-folder) › seeded area data + show-areas state)
-- `e2e/claude/hooks-off/areas.spec.ts:72` — the host-contributed workspace folder makes the Areas tool reachable (Areas (single-folder))
-- `e2e/claude/hooks-off/areas.spec.ts:92` — the Areas tool button is visible with a seeded areas layout (Areas (single-folder) › seeded areas layout (positive gate))
+- `e2e/copilot/areas-multiroot.spec.ts:86` — painting an area labels tiles in the layout (Areas (multi-root))
+- `e2e/copilot/areas-multiroot.spec.ts:115` — areas can be added and removed (Areas (multi-root))
+- `e2e/copilot/areas-multiroot.spec.ts:148` — a folder can be mapped to an area and the mapping persists (Areas (multi-root))
+- `e2e/copilot/areas-multiroot.spec.ts:184` — an agent for the MAPPED folder takes a seat inside its area (Areas (multi-root) › seat preference (alpha → Engineering))
+- `e2e/copilot/areas-multiroot.spec.ts:215` — an agent for an UNMAPPED folder is not forced into the area (Areas (multi-root) › seat preference (alpha → Engineering))
+- `e2e/copilot/areas-multiroot.spec.ts:259` — a Directory assigned an Area in its modal seats the agent it launches inside that Area (Areas (multi-root) › Area assignment from the Directory modal)
+- `e2e/copilot/areas-multiroot.spec.ts:314` — renaming a Directory carries its Area mapping to the new name (Areas (multi-root) › Area assignment from the Directory modal › rename)
+- `e2e/copilot/areas.spec.ts:40` — seeded areas + areaTiles load and showAreas is effective (Areas (single-folder) › seeded area data + show-areas state)
+- `e2e/copilot/areas.spec.ts:75` — the host-contributed workspace folder makes the Areas tool reachable (Areas (single-folder))
+- `e2e/copilot/areas.spec.ts:95` — the Areas tool button is visible with a seeded areas layout (Areas (single-folder) › seeded areas layout (positive gate))
 
 ### `@area:carpet` (8 tests)
 
-- `e2e/claude/hooks-off/carpet.spec.ts:50` — carpet sprites load + broadcast, and the Carpet category renders variants (Carpet)
-- `e2e/claude/hooks-off/carpet.spec.ts:71` — painting a tile records it in the carpet layer (Carpet)
-- `e2e/claude/hooks-off/carpet.spec.ts:88` — autotiling: the junction case reflects neighboring carpet tiles (Carpet)
-- `e2e/claude/hooks-off/carpet.spec.ts:129` — erasing removes a carpet tile (Carpet)
-- `e2e/claude/hooks-off/carpet.spec.ts:152` — the carpet eyedropper copies a tile’s variant (Carpet)
-- `e2e/claude/hooks-off/carpet.spec.ts:180` — a carpet stroke is a single undo entry (Carpet)
-- `e2e/claude/hooks-off/carpet.spec.ts:201` — carpet tiles persist across a save + panel reload (Carpet)
-- `e2e/claude/hooks-off/carpet.spec.ts:297` — a seeded carpet coexists with furniture on the same tile (Carpet surface placement (seeded))
+- `e2e/copilot/carpet.spec.ts:51` — carpet sprites load + broadcast, and the Carpet category renders variants (Carpet)
+- `e2e/copilot/carpet.spec.ts:72` — painting a tile records it in the carpet layer (Carpet)
+- `e2e/copilot/carpet.spec.ts:89` — autotiling: the junction case reflects neighboring carpet tiles (Carpet)
+- `e2e/copilot/carpet.spec.ts:130` — erasing removes a carpet tile (Carpet)
+- `e2e/copilot/carpet.spec.ts:156` — the carpet eyedropper copies a tile’s variant (Carpet)
+- `e2e/copilot/carpet.spec.ts:184` — a carpet stroke is a single undo entry (Carpet)
+- `e2e/copilot/carpet.spec.ts:205` — carpet tiles persist across a save + panel reload (Carpet)
+- `e2e/copilot/carpet.spec.ts:302` — a seeded carpet coexists with furniture on the same tile (Carpet surface placement (seeded))
 
 ### `@area:editor` (17 tests)
 
-- `e2e/claude/hooks-off/editor.spec.ts:101` — erasing a tile deletes the furniture it passes through (Layout editor — erase)
-- `e2e/claude/hooks-off/editor.spec.ts:124` — erasing away from an item leaves it in place (Layout editor — erase)
-- `e2e/claude/hooks-off/editor.spec.ts:146` — one undo restores both the tiles and the furniture an erase stroke removed (Layout editor — erase)
-- `e2e/claude/hooks-off/editor.spec.ts:184` — a right-drag erase stroke is a single undo entry (Layout editor — erase)
-- `e2e/claude/hooks-off/editor.spec.ts:223` — a floor paint stroke is a single undo entry (Layout editor — stroke undo)
-- `e2e/claude/hooks-off/editor.spec.ts:261` — a wall paint stroke is a single undo entry (Layout editor — stroke undo)
-- `e2e/claude/hooks-off/editor.spec.ts:297` — separate strokes stay separate undo entries (Layout editor — stroke undo)
-- `e2e/claude/hooks-off/editor.spec.ts:388` — dragging a desk moves the item standing on it (Layout editor — desks carry what stands on them)
-- `e2e/claude/hooks-off/editor.spec.ts:413` — rotating a desk turns the item standing on it (Layout editor — desks carry what stands on them)
-- `e2e/claude/hooks-off/editor.spec.ts:439` — alt-dragging a desk copies it with the item standing on it (Layout editor — desks carry what stands on them)
-- `e2e/claude/hooks-off/editor.spec.ts:471` — an alt-drag copy that overlaps the original is refused (Layout editor — desks carry what stands on them)
-- `e2e/claude/hooks-off/editor.spec.ts:496` — one undo removes the whole copied group (Layout editor — desks carry what stands on them)
-- `e2e/claude/hooks-off/editor.spec.ts:514` — selecting a placed item closes the open tool panel, and R rotates it (Layout editor — desks carry what stands on them)
-- `e2e/claude/hooks-off/editor.spec.ts:565` — a drag that would push the item on the desk off the grid is refused (Layout editor — a desk group fits as a whole or not at all)
-- `e2e/claude/hooks-off/editor.spec.ts:619` — a rotation that would swing the item on the desk into a chair is refused (Layout editor — a rotation fits as a whole or not at all)
-- `e2e/claude/hooks-off/editor.spec.ts:673` — a copy of an uncoloured item stays uncoloured under a Colorize palette (Layout editor — Furniture Copy)
-- `e2e/claude/hooks-off/editor.spec.ts:736` — eyedropping the item on a desk copies its colour, as its own undo entry (Layout editor — colour eyedropper)
+- `e2e/copilot/editor.spec.ts:101` — erasing a tile deletes the furniture it passes through (Layout editor — erase)
+- `e2e/copilot/editor.spec.ts:124` — erasing away from an item leaves it in place (Layout editor — erase)
+- `e2e/copilot/editor.spec.ts:146` — one undo restores both the tiles and the furniture an erase stroke removed (Layout editor — erase)
+- `e2e/copilot/editor.spec.ts:184` — a right-drag erase stroke is a single undo entry (Layout editor — erase)
+- `e2e/copilot/editor.spec.ts:223` — a floor paint stroke is a single undo entry (Layout editor — stroke undo)
+- `e2e/copilot/editor.spec.ts:261` — a wall paint stroke is a single undo entry (Layout editor — stroke undo)
+- `e2e/copilot/editor.spec.ts:297` — separate strokes stay separate undo entries (Layout editor — stroke undo)
+- `e2e/copilot/editor.spec.ts:388` — dragging a desk moves the item standing on it (Layout editor — desks carry what stands on them)
+- `e2e/copilot/editor.spec.ts:413` — rotating a desk turns the item standing on it (Layout editor — desks carry what stands on them)
+- `e2e/copilot/editor.spec.ts:439` — alt-dragging a desk copies it with the item standing on it (Layout editor — desks carry what stands on them)
+- `e2e/copilot/editor.spec.ts:471` — an alt-drag copy that overlaps the original is refused (Layout editor — desks carry what stands on them)
+- `e2e/copilot/editor.spec.ts:496` — one undo removes the whole copied group (Layout editor — desks carry what stands on them)
+- `e2e/copilot/editor.spec.ts:514` — selecting a placed item closes the open tool panel, and R rotates it (Layout editor — desks carry what stands on them)
+- `e2e/copilot/editor.spec.ts:565` — a drag that would push the item on the desk off the grid is refused (Layout editor — a desk group fits as a whole or not at all)
+- `e2e/copilot/editor.spec.ts:619` — a rotation that would swing the item on the desk into a chair is refused (Layout editor — a rotation fits as a whole or not at all)
+- `e2e/copilot/editor.spec.ts:673` — a copy of an uncoloured item stays uncoloured under a Colorize palette (Layout editor — Furniture Copy)
+- `e2e/copilot/editor.spec.ts:736` — eyedropping the item on a desk copies its colour, as its own undo entry (Layout editor — colour eyedropper)
 
 ### `@area:mobile` (8 tests)
 
-- `e2e/standalone/launch-drawer.spec.ts:463` — the phone drawer fits above the card bar and keeps + Directory reachable (Standalone / long Directory lists on a phone)
-- `e2e/standalone/mobile.spec.ts:164` — phone shell: + card launches and slides to the terminal; toggle, card taps and edge swipe navigate (Standalone / mobile shell)
-- `e2e/standalone/mobile.spec.ts:208` — tapping a URL in the terminal opens it; a sideways drag from it does not (Standalone / mobile shell)
-- `e2e/standalone/mobile.spec.ts:243` — the key bar shows while the software keyboard is up, under both viewport resize policies (Standalone / mobile shell)
-- `e2e/standalone/mobile.spec.ts:272` — copy and paste work on a plain-http origin (no Clipboard API) (Standalone / mobile shell)
-- `e2e/standalone/mobile.spec.ts:344` — the hooks info modal fits the phone screen (Standalone / mobile shell)
-- `e2e/standalone/mobile.spec.ts:369` — a two-finger pan stops the camera following a character; a pure pinch does not (Standalone / mobile shell)
-- `e2e/standalone/mobile.spec.ts:409` — the trackpad key follows the finger that pressed it, not touches[0] (Standalone / mobile shell)
+- `e2e/standalone/launch-drawer.spec.ts:200` — the phone Sessions manager fits and keeps its last Directory and + Directory reachable (Standalone / long Directory lists on a phone)
+- `e2e/standalone/mobile.spec.ts:170` — phone shell: + card manages a named session and opens its terminal; toggle, card taps and edge swipe navigate (Standalone / mobile shell)
+- `e2e/standalone/mobile.spec.ts:216` — tapping a URL in the terminal opens it; a sideways drag from it does not (Standalone / mobile shell)
+- `e2e/standalone/mobile.spec.ts:251` — the key bar shows while the software keyboard is up, under both viewport resize policies (Standalone / mobile shell)
+- `e2e/standalone/mobile.spec.ts:280` — copy and paste work on a plain-http origin (no Clipboard API) (Standalone / mobile shell)
+- `e2e/standalone/mobile.spec.ts:341` — the hooks info modal fits the phone screen (Standalone / mobile shell)
+- `e2e/standalone/mobile.spec.ts:366` — a two-finger pan stops the camera following a character; a pure pinch does not (Standalone / mobile shell)
+- `e2e/standalone/mobile.spec.ts:406` — the trackpad key follows the finger that pressed it, not touches[0] (Standalone / mobile shell)
 
 ### `@area:pets` (3 tests)
 
-- `e2e/claude/hooks-off/pets.spec.ts:90` — pet sprites load, broadcast, and expose manifest names in the editor (Pets)
-- `e2e/claude/hooks-off/pets.spec.ts:117` — placing a pet toggles it on/off and persists across a panel reload (Pets)
-- `e2e/claude/hooks-off/pets.spec.ts:202` — clicking a pet shows a heart bubble that auto-dismisses and dismisses on re-click (Pets)
+- `e2e/copilot/pets.spec.ts:90` — pet sprites load, broadcast, and expose manifest names in the editor (Pets)
+- `e2e/copilot/pets.spec.ts:117` — placing a pet toggles it on/off and persists across a panel reload (Pets)
+- `e2e/copilot/pets.spec.ts:205` — clicking a pet shows a heart bubble that auto-dismisses and dismisses on re-click (Pets)
 
 <!-- END:E2E-INVENTORY -->
-
-## Coverage philosophy
-
-We do not measure e2e via code coverage (too noisy, doesn't map to user-observable scenarios). Coverage is tracked by:
-
-1. **The inventory section above** — every test in the suite with its area tag and file:line.
-2. **The "What's NOT covered" gap list** — deliberately maintained; closing a gap removes the corresponding row.
-3. **Allure dashboard** — `epic` / `feature` / `story` labels group tests by area without needing this file. Run `npm run test:report` after a suite run, then open `allure-report/allure/index.html` → Behaviors view.

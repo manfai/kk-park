@@ -17,6 +17,7 @@ export interface ServerTarget {
  * `--host` would be silently ignored in favour of a server that has a shell.
  */
 export interface StandaloneAccess {
+  providerId?: string;
   /** Whether the browser may launch agents and attach to their terminals. */
   terminal: boolean;
   /** Bind address. */
@@ -27,6 +28,7 @@ export interface StandaloneAccess {
 
 /** Complete per-server discovery record stored in the multi-server registry. */
 export interface ServerConfig extends ServerTarget {
+  providerId?: string;
   /** Timestamp (ms) when the server started. */
   startedAt: number;
   /** Whether this server serves the webview SPA (standalone / !embedded). */
@@ -47,6 +49,7 @@ export function sameStandaloneAccess(
   if (running === undefined || wanted === undefined) return running === wanted;
   return (
     running.terminal === wanted.terminal &&
+    (running.providerId ?? 'copilot') === (wanted.providerId ?? 'copilot') &&
     running.host === wanted.host &&
     running.allowedHosts.length === wanted.allowedHosts.length &&
     running.allowedHosts.every((h, i) => h === wanted.allowedHosts[i])
@@ -58,6 +61,7 @@ function isStandaloneAccess(value: unknown): value is StandaloneAccess {
     isRecord(value) &&
     typeof value.terminal === 'boolean' &&
     typeof value.host === 'string' &&
+    (value.providerId === undefined || typeof value.providerId === 'string') &&
     Array.isArray(value.allowedHosts) &&
     value.allowedHosts.every((h) => typeof h === 'string')
   );
@@ -89,6 +93,7 @@ export function isServerConfig(value: unknown): value is ServerConfig {
     Number.isSafeInteger(value.startedAt) &&
     (value.startedAt as number) >= 0 &&
     typeof value.servesSpa === 'boolean' &&
+    (value.providerId === undefined || typeof value.providerId === 'string') &&
     value.protocol === SERVER_REGISTRY_PROTOCOL_VERSION &&
     (value.standalone === undefined || isStandaloneAccess(value.standalone))
   );

@@ -5,9 +5,7 @@
  * property that it is unreachable without the auth token, from a real WebSocket
  * client against a real server. See docs/design/standalone-terminal.md.
  */
-
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Named import: `ws` is CJS, and the server tsconfig's Node16 resolution has no
@@ -16,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // must set an Origin header, which the built-in client cannot do.
 import { WebSocket } from 'ws';
 
+import { createAgentState } from '../src/agentState.js';
 import {
   WS_CLOSE_FORBIDDEN_ORIGIN,
   WS_CLOSE_NO_SESSION,
@@ -23,6 +22,7 @@ import {
 } from '../src/constants.js';
 import type { IPty, PtyModule } from '../src/terminal/ptyModule.js';
 import { PtySessionManager } from '../src/terminal/ptySessionManager.js';
+import { newTestDirectory } from './testSupport.js';
 
 let tmpBase: string;
 
@@ -121,28 +121,44 @@ function attach(
 describe('terminal WebSocket auth', () => {
   let server: InstanceType<typeof PixelAgentsServer>;
   let ptyManager: PtySessionManager;
+  let store: InstanceType<typeof AgentStateStore>;
   let port: number;
   let token: string;
 
   beforeEach(async () => {
-    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-terminal-test-'));
+    tmpBase = newTestDirectory('pxl-terminal-test-');
+    vi.stubEnv('COPILOT_HOME', path.join(tmpBase, '.copilot'));
     fs.mkdirSync(path.join(tmpBase, '.pixel-agents'), { recursive: true });
     server = new PixelAgentsServer();
     ptyManager = fakeManager();
+    store = new AgentStateStore();
+    store.set(
+      1,
+      createAgentState({
+        id: 1,
+        sessionId: 'owned-session',
+        projectDir: tmpBase,
+        isExternal: false,
+        characterName: 'Coder',
+        connected: true,
+        terminalAgentId: 1,
+      }),
+    );
     const config = await server.start({
-      store: new AgentStateStore(),
+      store,
       embedded: false,
       ptyManager,
     });
     port = config.port;
     token = config.token;
-    ptyManager.create({ agentId: 1, command: 'claude', args: [], cwd: tmpBase });
+    ptyManager.create({ agentId: 1, command: 'copilot', args: [], cwd: tmpBase });
   });
 
   afterEach(() => {
     void ptyManager?.disposeAll();
     server?.stop();
     try {
+      vi.unstubAllEnvs();
       fs.rmSync(tmpBase, { recursive: true, force: true });
     } catch {
       /* ignore */
@@ -204,7 +220,7 @@ describe('terminal WebSocket auth', () => {
     server.stop();
     server = new PixelAgentsServer();
     const config = await server.start({
-      store: new AgentStateStore(),
+      store,
       embedded: false,
       ptyManager,
       allowedHosts: [proxy],
@@ -225,6 +241,26 @@ describe('terminal WebSocket auth', () => {
     const result = await attach(port, 999, token);
     expect(result.code).toBe(WS_CLOSE_NO_SESSION);
   });
+
+  it.each(['hide', 'archive', 'switch'])(
+    'closes an attached pane on session %s without killing its PTY',
+    async (change) => {
+      const ws = new WebSocket(terminalUrl(port, 1, token));
+      await new Promise<void>((resolve, reject) => {
+        ws.once('message', () => resolve());
+        ws.once('error', reject);
+      });
+      const closed = new Promise<number>((resolve) => ws.once('close', resolve));
+      if (change === 'hide') store.setCharacterName(1, '');
+      else if (change === 'archive') store.setArchived(1, true);
+      else {
+        store.get(1)!.terminalAgentId = 2;
+        store.notifySessionsChanged();
+      }
+      expect(await closed).toBe(WS_CLOSE_NO_SESSION);
+      expect(ptyManager.has(1)).toBe(true);
+    },
+  );
 
   it('sends a serialized replay snapshot first, then the live stream', async () => {
     // Pre-attach output must arrive as screen state inside the replay frame

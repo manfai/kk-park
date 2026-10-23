@@ -6,6 +6,8 @@ import { Button } from './ui/Button.js';
 export interface AgentAppearance {
   palette: number;
   hueShift: number;
+  characterName?: string;
+  archived?: boolean;
 }
 
 /** Agent activity reflected by the tab's status dot. */
@@ -34,7 +36,7 @@ interface AgentCardProps {
   status: TabStatus | null;
   /** When false the × is invisible (not removed — the card keeps its width so
    *  the bar doesn't reflow). Mobile only shows it on the active terminal tab
-   *  to keep a stray tap from killing an agent. */
+   *  to keep a stray tap from archiving a character. */
   showClose?: boolean;
   onSelect: (agentId: number) => void;
   onClose: (agentId: number) => void;
@@ -54,35 +56,43 @@ export function AgentCard({
 }: AgentCardProps) {
   return (
     <div
-      className={`pointer-events-auto flex items-stretch gap-1 p-1 cursor-pointer border-2 shrink-0 ${CARD_VARIANT[variant]}`}
+      className={`pointer-events-auto flex flex-col items-stretch gap-1 p-1 cursor-pointer border-2 shrink-0 ${CARD_VARIANT[variant]}`}
       onClick={() => onSelect(agentId)}
-      title={`Agent ${agentId}`}
+      title={appearance.characterName ?? `Agent ${agentId}`}
     >
-      <CharacterMugShot palette={appearance.palette} hueShift={appearance.hueShift} />
-      {/* Close on top, status dot at the bottom, both centred over the
-          same column beside the mug shot. */}
-      <div className="flex flex-col items-center justify-between shrink-0">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={(e) => {
-            // Don't also select the tab we're about to remove.
-            e.stopPropagation();
-            onClose(agentId);
-          }}
-          title="Close agent"
-          className={`leading-none ${showClose ? '' : 'invisible'}`}
-        >
-          ×
-        </Button>
-        {/* 1px left: optically centres the solid square under the pixel-font ×
-            glyph, which sits a hair left in its cell. mb (not pb) lifts it off
-            the card's bottom edge: the span is a fixed-size empty box, so
-            padding is invisible — only margin moves it. */}
-        <span
-          className={`size-6 shrink-0 relative -left-1 mb-2 ${status ? STATUS_DOT[status] : ''}`}
-        />
+      <div className="flex items-stretch gap-1">
+        <CharacterMugShot palette={appearance.palette} hueShift={appearance.hueShift} />
+        {/* Close on top, status dot at the bottom, both centred over the
+            same column beside the mug shot. */}
+        <div className="flex flex-col items-center justify-between shrink-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={(e) => {
+              // Don't also select the tab we're about to remove.
+              e.stopPropagation();
+              onClose(agentId);
+            }}
+            title="Archive character"
+            className={`leading-none ${showClose && !appearance.archived ? '' : 'invisible'}`}
+          >
+            ×
+          </Button>
+          {/* 1px left: optically centres the solid square under the pixel-font ×
+              glyph, which sits a hair left in its cell. mb (not pb) lifts it off
+              the card's bottom edge: the span is a fixed-size empty box, so
+              padding is invisible — only margin moves it. */}
+          <span
+            className={`size-6 shrink-0 relative -left-1 mb-2 ${status ? STATUS_DOT[status] : ''}`}
+          />
+        </div>
       </div>
+      {appearance.characterName && (
+        <span className="text-sm text-text max-w-56 truncate text-center">
+          {appearance.characterName}
+        </span>
+      )}
+      {appearance.archived && <span className="text-xs text-text-muted text-center">Archived</span>}
     </div>
   );
 }

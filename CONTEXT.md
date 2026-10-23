@@ -22,12 +22,18 @@ _Avoid_: guest mode, watch-only, untokened (that's how it happens, not what it i
 
 ## Agents & Teams
 
+GitHub Copilot CLI currently reports top-level agents only. The team and sub-agent
+terms below describe the generic office model and dormant protocol capabilities,
+not implemented Copilot child-agent tracking.
+
 **Agent**:
 An AI coding session tracked by Pixel Agents, whether spawned from the office or adopted from an external terminal.
 _Avoid_: bot, terminal (as a synonym), session (as a synonym)
 
+For Copilot CLI, identity is the immutable session ID, not the terminal process or Directory. A locally assigned character name makes an agent visible; unnamed sessions remain archived even while running.
+
 **Headless agent**:
-An agent with no terminal — a non-interactive run adopted from outside the office, for example. A full citizen: it has a seat and can be selected, but there is no terminal to focus. Agents it spawns are sub-agents or teammates like anyone else's. Optionally drawn as a Ghost.
+An agent with no terminal — a non-interactive run adopted from outside the office, for example. A full citizen: it has a seat and can be selected, but there is no terminal to focus. Optionally drawn as a Ghost.
 
 **Character**:
 The animated pixel-art figure representing an agent in the office. An agent has a status and a session; its character has a position and an animation state.
@@ -49,7 +55,7 @@ The agent that spawned a Team's teammates. An agent becomes a lead the moment it
 _Avoid_: parent (that's the sub-agent relationship), orchestrator
 
 **Teammate**:
-A named agent spawned by another agent — the name is what makes it a teammate. Its spawner is its Lead, and together they form a Team. Every teammate has its own transcript and sits in a seat; it may or may not have its own session or terminal — how it runs never changes what it is.
+A named agent spawned by another agent — the name is what makes it a teammate. Its spawner is its Lead, and together they form a Team. Every teammate sits in a seat; it may or may not have its own session or terminal — how it runs never changes what it is.
 _Avoid_: inline teammate, tmux teammate, session teammate (former run-style distinctions; a teammate's run style is a property, not an identity)
 
 ## Agent Lifecycle
@@ -57,6 +63,12 @@ _Avoid_: inline teammate, tmux teammate, session teammate (former run-style dist
 **Launch**:
 Start a new agent from the office.
 _Avoid_: spawn (that's the character-level visual event), create
+
+**Archive**:
+Confine a named character inside the nearest reachable empty Jail Cage after confirmation, keeping its name and conversation history. One archived character per cage; a character walking there already reserves it. Its managed CLI stops; external terminals are not stopped. Archived characters stand behind the bars instead of working or wandering. Missing, occupied, or unreachable cages prevent Archive. Unnamed sessions remain hidden and do not occupy cages.
+
+**Resume**:
+Open an offline agent's exact Copilot session in a new managed terminal, preserving its character ID, name, appearance, and seat.
 
 **Directory**:
 A named filesystem location agents can be launched into. Directories come from two sources: defined by the user in the office, or contributed by the host — VS Code contributes its workspace folders, standalone contributes the directory the server was started from. Host-contributed directories cannot be edited in the office.
@@ -70,12 +82,8 @@ _Avoid_: import, attach
 The character-level visual event: a character materializing into or dissolving out of the office. An agent is launched or adopted; its character spawns.
 
 **Dismiss**:
-Remove an agent from the office by user choice, without judging its session. A dismissed session is not re-adopted.
+Stop observing an agent's current connection by user choice, without deleting its session record. Late activity is ignored until a new session-start or an explicit resume.
 _Avoid_: close, delete
-
-**Orphaned**:
-An agent whose transcript has been deleted, so the session it represents no longer exists. The office removes orphaned agents automatically.
-_Avoid_: stale (implies inactivity or age, which never removes an agent), dead, ended
 
 ## Interaction
 
@@ -93,7 +101,7 @@ Bring an agent's terminal to the front. Reserved exclusively for terminals — n
 ## First Run
 
 **Intro**:
-The four-step first-run tour the Greeter speaks: welcome, Claude Code, hooks consent, all set. The hooks consent ask is one step of it, not a separate dialog.
+The four-step first-run tour the Greeter speaks: welcome, GitHub Copilot CLI, hooks consent, all set. The hooks consent ask is one step of it, not a separate dialog.
 _Avoid_: onboarding, tutorial, wizard, consent modal
 
 **Greeter**:
@@ -128,7 +136,7 @@ The indicator above a character announcing a form of inactivity: "…" for a per
 _Avoid_: bubble alone when ambiguous, notification
 
 **Context gauge**:
-The small bar under an agent's activity label showing how full its context window is. Every agent has one once it has taken a turn; sub-agents never do, having no session of their own. It reads the newest turn, so it falls when a session compacts or clears — it is a level, not a total.
+The generic office model's small bar under an agent's activity label showing how full its context window is. It is a level, not a total. Copilot context usage is not currently reported, so this gauge is not populated.
 _Avoid_: fuel gauge, health bar, token gauge (tokens are the unit, context is the thing)
 
 ## Office & Layout
@@ -190,21 +198,18 @@ _Avoid_: roam, patrol
 **Hook**:
 A push notification an AI tool sends about its own session activity, delivered to Pixel Agents as it happens.
 
-**Transcript**:
-The append-only record of a session. Read in both detection modes for tool content.
-_Avoid_: JSONL (Claude's file format, not the concept), log
-
 **Hooks mode**:
-The preferred detection mode, in which agent status is driven by hooks.
+The sole detection mode, in which agent status is driven by Copilot CLI hooks.
 
-**Heuristic mode**:
-The fallback detection mode, in which agent status is inferred from transcript activity, timers, and silence.
-_Avoid_: file fallback, transcript mode, polling mode
+**Enrollment**:
+The explicit opt-in for a Copilot CLI process to report activity: `PIXEL_AGENTS_COPILOT=1`.
+Office launches set it automatically. External CLI processes must set it themselves;
+native Copilot Chat is not integrated. There is no transcript fallback.
 
 ## Integration Boundary
 
 **Provider**:
-The integration that connects one coding-agent CLI — Claude Code, Codex, Pi, Antigravity, OpenClaw, and the like — to Pixel Agents. A provider normalizes its CLI's raw activity into agent events and knows how to install that CLI's hooks. One provider per CLI; Claude Code is the reference implementation.
+The integration that connects a coding-agent CLI to Pixel Agents. A provider normalizes its CLI's raw activity into agent events and knows how to install that CLI's hooks. GitHub Copilot CLI is the only current provider.
 _Avoid_: plugin, connector
 
 **Agent event**:

@@ -15,6 +15,13 @@ declare global {
         waitingAwaitingInput?: boolean;
         isHeadless?: boolean;
         isGreeter?: boolean;
+        isArchived?: boolean;
+        archiveCageId?: string;
+        x: number;
+        y: number;
+        tileCol: number;
+        tileRow: number;
+        state: string;
       }>;
       /** The character the camera follows (null = free camera). */
       getCameraFollowId?: () => number | null;
@@ -152,6 +159,13 @@ export function installTestHooks(officeStateRef: { current: OfficeState | null }
       waitingAwaitingInput: ch.waitingAwaitingInput,
       isHeadless: ch.isHeadless,
       isGreeter: ch.isGreeter,
+      isArchived: ch.isArchived,
+      archiveCageId: ch.archiveCageId,
+      x: ch.x,
+      y: ch.y,
+      tileCol: ch.tileCol,
+      tileRow: ch.tileRow,
+      state: ch.state,
     }));
   };
 

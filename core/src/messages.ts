@@ -13,6 +13,9 @@ export type ServerMessage =
   | AgentClosed
   | AgentSelected
   | ExistingAgents
+  | SessionsLoaded
+  | SessionActionRejected
+  | SessionOpened
   | AgentStatus
   | AgentToolStart
   | AgentToolDone
@@ -53,6 +56,10 @@ export type ClientMessage =
   | LaunchAgent
   | FocusAgent
   | CloseAgent
+  | RequestSessions
+  | SetSessionCharacterName
+  | SetSessionArchived
+  | OpenSession
   | SaveAgentSeats
   | SaveLayout
   | SetSoundEnabled
@@ -65,7 +72,6 @@ export type ClientMessage =
   | SetWatchAllSessions
   | ExportLayout
   | ImportLayout
-  | OpenSessionsFolder
   | AddExternalAssetDirectory
   | RemoveExternalAssetDirectory
   | SaveAreaMappings
@@ -79,6 +85,8 @@ export type ClientMessage =
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
+  providerId?: string;
+  displayName?: string;
   readingTools: string[];
   subagentToolNames: string[];
 }
@@ -86,6 +94,9 @@ export interface ProviderCapabilities {
 export interface AgentCreated {
   type: 'agentCreated';
   id: number;
+  characterName?: string;
+  archived?: boolean;
+  hooksOnly?: boolean;
   directoryName?: string;
   isExternal?: boolean;
   palette?: number;
@@ -106,14 +117,46 @@ export interface ExistingAgents {
   type: 'existingAgents';
   agents: number[];
   agentMeta: Record<string, AgentSeatMeta>;
+  characterNames?: Record<string, string>;
   directoryNames: Record<string, string>;
   externalAgents: Record<string, boolean>;
 }
 
 export interface AgentSeatMeta {
+  archived?: boolean;
   palette?: number;
   hueShift?: number;
   seatId?: string;
+}
+
+export interface SessionsLoaded {
+  type: 'sessionsLoaded';
+  sessions: SessionEntry[];
+}
+
+export interface SessionEntry {
+  id: number;
+  sessionId: string;
+  characterName?: string;
+  archived?: boolean;
+  projectDir: string;
+  directoryName?: string;
+  connected: boolean;
+  canOpen: boolean;
+  status: SessionStatus;
+}
+
+export type SessionStatus = 'offline' | 'active' | 'waiting' | 'idle' | 'needs-input';
+
+export interface SessionActionRejected {
+  type: 'sessionActionRejected';
+  id?: number;
+  reason: string;
+}
+
+export interface SessionOpened {
+  type: 'sessionOpened';
+  id: number;
 }
 
 export interface AgentStatus {
@@ -395,6 +438,27 @@ export interface CloseAgent {
   id: number;
 }
 
+export interface RequestSessions {
+  type: 'requestSessions';
+}
+
+export interface SetSessionCharacterName {
+  type: 'setSessionCharacterName';
+  id: number;
+  name: string;
+}
+
+export interface SetSessionArchived {
+  type: 'setSessionArchived';
+  id: number;
+  archived: boolean;
+}
+
+export interface OpenSession {
+  type: 'openSession';
+  id: number;
+}
+
 export interface SaveAgentSeats {
   type: 'saveAgentSeats';
   seats: Record<string, SeatAssignment>;
@@ -460,10 +524,6 @@ export interface ExportLayout {
 
 export interface ImportLayout {
   type: 'importLayout';
-}
-
-export interface OpenSessionsFolder {
-  type: 'openSessionsFolder';
 }
 
 export interface AddExternalAssetDirectory {

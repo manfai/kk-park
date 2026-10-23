@@ -28,20 +28,19 @@ Pixel Agents turns the AI coding agents running in your terminals into animated 
 It ships in two forms from the same codebase:
 
 - **VS Code extension** — [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=pablodelucca.pixel-agents) and [Open VSX](https://open-vsx.org/extension/pablodelucca/pixel-agents). Agents launch into VS Code terminals; characters render in the panel area.
-- **Standalone CLI** — `npx pixel-agents` starts a local server and serves the same office as a browser app, useful for tmux, remote, and non-VS Code workflows.
+- **Standalone CLI** — starts a local server and serves the same office as a browser app, useful for remote and non-VS Code workflows.
 
-The architecture is fully agent-agnostic and editor-agnostic: a typed `HookProvider` interface defines the integration boundary so adding a new AI tool is a single subdirectory of code. Claude Code is the reference implementation today; Codex, Gemini, Cursor, and others are on the roadmap.
+This source tree integrates **GitHub Copilot CLI** through a typed `HookProvider` boundary. Follow the local build instructions below to use these changes; published npm packages and Marketplace releases may not contain them yet.
 
 ![Pixel Agents screenshot](webview-ui/public/office.png)
 
 ## Features
 
-- **One agent, one character** — every Claude Code terminal gets its own animated character
+- **One named session, one character** — a local character name brings a Copilot CLI session into the office; unnamed sessions stay archived, even while running
 - **Live activity tracking** — characters animate based on what the agent is actually doing (writing, reading, running commands)
 - **Office layout editor** — design your office with floors, walls, and furniture using a built-in editor
 - **Speech bubbles** — visual indicators when an agent is waiting for input or awaiting permission
 - **Sound notifications** — optional chimes when an agent finishes its turn or requests permission
-- **Sub-agents and Agent Teams** — see ephemeral sub-agents and persistent Claude teammates as separate characters, including team roles and lifecycle changes
 - **Persistent layouts** — your office design is saved and shared across VS Code windows
 - **Shared layout and assets** — import/export layouts and load external character, pet, and furniture packs
 - **Areas** — paint named areas onto the office, map workspace folders to them, and new agents sit inside the areas mapped to their folder
@@ -57,7 +56,7 @@ The vision is: play a game, build a product. Two goals follow from it: to build 
 
 Roughly three stages get there:
 
-1. **Everywhere, with everything.** Today it's Claude Code in VS Code or the browser. It should be whatever agent you run, wherever you work. A new CLI is a subdirectory, not a rewrite — this is where help is most useful right now.
+1. **Everywhere, with everything.** Today it's GitHub Copilot CLI in VS Code terminals or the browser. The provider boundary leaves room for more integrations.
 2. **Actually a game.** Health bars for rate limits and token budgets. Scores for whatever you care about. Furniture that _does_ things. Offices you open like save files, one per project.
 3. **Expand the orchestration frontier.** Orchestrator characters. Form a team by dragging a box around them. Hand work between agents. Point them at a board and let them pick up tasks themselves.
 
@@ -65,63 +64,106 @@ Most of this is still ahead. See [Issues](https://github.com/pixel-agents-hq/pix
 
 ## Requirements
 
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured
+- An installed and signed-in [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli), with support for user hooks, `exec` hook commands, and `--session-id`
 - **VS Code extension:** VS Code 1.105.0 or later
-- **Standalone CLI:** Node.js 20 or later
+- Node.js on the CLI's `PATH` for the hook bridge; use Node.js 24 for local builds and tests
 - Windows, Linux, or macOS
 
 ## Getting Started
 
+### Build and run this source tree
+
+```bash
+git clone https://github.com/pixel-agents-hq/pixel-agents.git
+cd pixel-agents
+npm install
+npm run build
+node dist/cli.js
+```
+
+Run these commands from the checkout containing these changes. Copilot CLI is the only provider and needs no provider setting. `--provider copilot` is accepted for compatibility. `npx pixel-agents` and a global npm install use the published package, not your local build; do not use them to test unpublished changes.
+
 ### VS Code extension
 
-1. Install Pixel Agents from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=pablodelucca.pixel-agents) or [Open VSX](https://open-vsx.org/extension/pablodelucca/pixel-agents).
+1. Build this checkout, open it in VS Code, and press **F5** to launch the Extension Development Host with the local extension.
 2. Open the **Pixel Agents** panel beside the terminal.
-3. Click **+ Agent** to open its drawer of **Directories**, then click one to launch Claude Code in it. Your workspace folders are listed there once you turn on **Settings → Show Workspace Folders**; **+ Directory** adds your own (a name, a path, and optionally the Areas its agents should sit in), and the pencil on a row you added edits or deletes it.
+3. Approve the hooks installation in the Intro. Click **+ Agent** to open the session manager. Find a session under **Archived** and give it a local character name, or launch a new unnamed session in a Directory and then name it. Your workspace folders are listed once you turn on **Settings → Show Workspace Folders**; **+ Directory** adds your own launch locations.
 
-To use Claude with `--dangerously-skip-permissions`, turn on **Settings → Skip Permissions**. It stays on for every agent launched from that host until you turn it off. Only use this when you accept the security implications.
+Launched agents run in VS Code terminals, not native Copilot Chat. There is no provider setting to change.
 
-Pixel Agents also detects Claude sessions started outside the extension. Turn on **Settings → Watch All Sessions** to include sessions from other workspaces.
+For opted-in external Copilot CLI sessions, turn on **Settings → Watch All Sessions** to include other workspaces. See enrollment below.
 
 ### Standalone CLI
 
-Run Pixel Agents from the workspace whose Claude sessions you want to see:
+Run the locally built entry point. Set the launch Directory in the office:
 
 ```bash
-cd /path/to/your/project
-npx pixel-agents
+node dist/cli.js
 ```
 
-The CLI chooses a free local port and prints the URL. Click **+ Agent** to open the Directory drawer and click a Directory to launch Claude Code in it; the agent's terminal opens in the browser. **+ Directory** adds your own, and **Settings → Show Start Directory** lists the directory the CLI was started from. On a phone, tap the **+** card to open the same drawer and tap a Directory to launch (long-press a Directory you added to edit it). Claude Code started in your own terminal is picked up too. To install the command globally instead:
+The CLI chooses a free local port and prints the URL. Approve the hooks installation in the Intro. Click **+ Agent** (the **+** card on a phone) to open the session manager. Name an archived session to show its character, then open it; an offline session resumes with its exact Copilot session ID. You can also launch a new unnamed session in a Directory and name it afterward. **+ Directory** adds launch locations, and **Settings → Show Start Directory** lists the directory the CLI was started from.
 
-```bash
-npm install --global pixel-agents
-pixel-agents
-```
+### Sessions and character names
+
+The session manager lists known sessions and reads local Copilot initialization metadata to discover history; conversation prompts, results, and titles are not imported. Multiple sessions in the same Directory remain separate agents. Search by session ID, character name, or Directory.
+
+Character names belong only to Pixel Agents and do not rename Copilot conversations. Pressing a character's **×** asks for confirmation before Archive: its managed CLI stops, its name and conversation are kept, and it enters the nearest reachable empty **Jail Cage**, remaining standing behind its bars. Place cages through **Layout → Furniture → Decor → Jail Cage** first. Each cage holds one archived character, including reservations while walking there. With no suitable empty cage, Archive is disabled and the CLI stays running. External terminals are never stopped. Unnamed sessions remain hidden rather than occupying cages.
+
+Archived named characters return to available cages after reload and are listed under **Archived / unnamed**. Their name/status panels and desktop/mobile cards are hidden; a large **ARCHIVED** label stays visible above the cage even when ordinary labels are disabled. Choose **Restore to office** to release one without starting a CLI, or click its character to resume its exact session and release it after a successful launch. Releasing a character restores its cards and frees its cage for another. If cages are removed or unreachable after a layout edit, the character stays inactive with an explicit warning until a suitable cage is available. Named offline sessions preserve identity and appearance. Names and seats are adapter-local, so VS Code and standalone retain separate mappings.
+
+Clicking a named character activates that exact session: focus its current managed terminal, or launch `copilot --resume <session-id>` if it is offline. A terminal changing sessions does not change the old character's identity. A running CLI observed outside Pixel Agents is observation-only; Pixel Agents reports that its terminal cannot be controlled rather than opening an unrelated terminal.
 
 Use a fixed address or port when needed:
 
 ```bash
-pixel-agents --port 3100
-pixel-agents --host 127.0.0.1 --port 3100
-pixel-agents --no-terminal
-pixel-agents --help
+node dist/cli.js --port 3100
+node dist/cli.js --host 127.0.0.1 --port 3100
+node dist/cli.js --no-terminal
+node dist/cli.js --help
 ```
 
 The default bind address is `127.0.0.1`. Binding to `0.0.0.0` exposes the UI and WebSocket to the local network; do this only on a trusted network.
 
-Open the URL the CLI prints - it carries a `?token=` for this server. Any browser can watch the office without it, but installing or removing hooks (which edits your agent tool's own settings file, like the `~/.claude/settings.json`), launching agents from the browser and attaching to their terminals are only offered to a session that has the token, so an untokened client on the network cannot approve or do any of it. Open the bare address instead and the hooks toggle in Settings is refused (reporting the actual install state rather than appearing to work) and the **+ Agent** button explains what it needs. Standalone keeps the same token across restarts (in `~/.pixel-agents/standalone-token`, readable only by you), so a bookmarked or home-screen URL keeps working — as long as the port stays the same too, which takes `--port` (the default port is picked fresh on every start).
+Open the URL the CLI prints - it carries a `?token=` for this server. Any browser can watch named characters without it, but installing or removing our Copilot hook file, viewing the session manager, assigning names, launching agents and attaching to their terminals require the token and an allowed host name. A read-only office hides these controls and does not receive the archived session catalogue. Standalone keeps the same token across restarts (in `~/.pixel-agents/standalone-token`, readable only by you), so a bookmarked or home-screen URL keeps working — as long as the port stays the same too, which takes `--port` (the default port is picked fresh on every start).
 
 Treat that URL as a secret: the token is a bearer capability, not proof of being local. Whoever holds it can approve the hook install from anywhere the server is reachable — so don't paste the URL into a shared channel, and note that it also lands in your browser history (the server's own request log redacts it).
 
 Pass `--no-terminal` to disable the embedded terminal — watch agents without launching or attaching to them from the browser.
 
-Copying from the embedded terminal is verbatim: Cmd+C (Mac), Ctrl+C or Ctrl+Shift+C with a selection (Windows, Linux), the browser's Copy, and the **Copy** button on a phone copy exactly what is on screen. Claude Code wraps long prose into lines indented two spaces; to copy such a passage as flowing text instead, select it and press **Alt+C** (**Option+C** on a Mac), or tap **Copy as text** on a phone. On a phone opened over plain `http://` (a LAN address), the paste key asks for the text in a prompt, since the page cannot read the clipboard there.
+Copying from the embedded terminal is verbatim: Cmd+C (Mac), Ctrl+C or Ctrl+Shift+C with a selection (Windows, Linux), the browser's Copy, and the **Copy** button on a phone copy exactly what is on screen. On a phone opened over plain `http://` (a LAN address), the paste key asks for the text in a prompt, since the page cannot read the clipboard there.
 
 ### Running the extension and standalone together
 
 The extension and standalone CLI can run at the same time. Each server registers under `~/.pixel-agents/servers/`; the hook script sends events to all active registrations. VS Code and standalone keep separate agents, seats, and settings while using the shared office layout.
 
 Stop a standalone server with **Ctrl+C**. It removes only its own registration.
+
+### Copilot hooks and enrollment
+
+Copilot activity tracking requires hooks. There is no transcript-polling fallback: declining installation or disabling hooks leaves live activity tracking unavailable.
+
+Installation creates only `~/.copilot/hooks/pixel-agents.json` (or `$COPILOT_HOME/hooks/pixel-agents.json`), plus the local bridge `~/.pixel-agents/hooks/copilot-hook.js`. Existing hook files are preserved; a conflicting or modified `pixel-agents.json` is refused rather than overwritten or deleted. Disable **Instant Detection (Hooks)** to remove our configuration. Restart existing Copilot CLI sessions after installing hooks.
+
+Hooks need `node` on the CLI's PATH. If Copilot's session sandbox restricts the bridge, its registry reads, or localhost access, adjust your sandbox policy explicitly; Pixel Agents does not widen sandbox permissions.
+
+Only explicitly enrolled CLI processes report activity, so user hooks shared with VS Code do not automatically track native Copilot Chat. Office launches enroll automatically. To opt in a CLI started outside the office:
+
+```bash
+# macOS / Linux
+PIXEL_AGENTS_COPILOT=1 copilot
+```
+
+```powershell
+# Windows PowerShell
+$env:PIXEL_AGENTS_COPILOT = "1"
+copilot
+```
+
+External agents must run in the office's workspace, or **Watch All Sessions** must be enabled. Start the office before the CLI; if the office restarts, the next observed activity can re-adopt the session. Both hooks installation and `PIXEL_AGENTS_COPILOT=1` are required.
+
+The initial integration shows session lifecycle, read/write/command activity, text-only turns, real permission prompts, and waiting-for-input notifications. It does not show Copilot child agents, token/context usage, or control native Copilot Chat. Identical concurrent tool calls are displayed as one activity until all matching calls finish. **Skip Permissions** maps to Copilot's `--allow-all-tools`; it does not grant unrestricted paths or URLs.
+
+Pixel Agents does not intercept API keys or transmit real prompt text, and its hooks never auto-approve tools. **Skip Permissions** is an explicit opt-in launch setting, off by default; enable it only if you accept the security implications.
 
 ## Customizing the Office
 
@@ -144,19 +186,16 @@ Use **Settings → Add Asset Directory** to load external characters, pets, and 
 
 ## How It Works
 
-Pixel Agents uses two Claude Code detection paths:
+Enrolled Copilot CLI processes invoke the installed hook bridge. It discovers active Pixel Agents servers and sends authenticated lifecycle and activity events over localhost. Prompt-submission events are represented without their real prompt text.
 
-- **Hooks mode** (default) — a hook script receives Claude events such as `SessionStart`, `PreToolUse`, `PermissionRequest`, and `Stop`. It discovers active Pixel Agents servers and sends authenticated events to each one.
-- **Heuristic mode** (fallback) — when hooks are unavailable, the runtime infers agent status by scanning Claude's JSONL session transcripts under `~/.claude/projects/`. Transcripts are also read in hooks mode for details not present in an event.
+The Copilot provider normalizes hooks into a shared `AgentEvent` model. `AgentRuntime` updates the central state store, and the active transport sends typed messages to the React webview. The office renders through Canvas 2D with pathfinding and character state machines. History discovery reads only the first initialization record from `session-state/*/events.jsonl`; it does not parse conversation content or infer activity from transcripts.
 
-The Claude provider normalizes both sources into a shared `AgentEvent` model. `AgentRuntime` updates the central state store, and the active transport sends typed messages to the React webview. The office renders through Canvas 2D with pathfinding and character state machines.
-
-Pixel Agents does not modify Claude Code. Its hook configuration and persistent data live under `~/.claude/` and `~/.pixel-agents/` respectively.
+Pixel Agents does not modify Copilot CLI itself. Its dedicated hook file lives under the Copilot configuration directory; office state, layouts, and the bridge live under `~/.pixel-agents/`.
 
 ### Architecture
 
 - **`core/`** — provider, adapter, transport, schema, and AsyncAPI message contracts with no runtime side effects.
-- **`server/`** — shared Fastify server, agent runtime, persistence, Claude provider, transcript scanning, and standalone CLI.
+- **`server/`** — shared Fastify server, hooks-driven agent runtime, persistence, Copilot provider, and standalone CLI.
 - **`adapters/vscode/`** — the VS Code adapter: terminal, persistence, and webview bridge.
 - **`webview-ui/`** — React 19, Vite, Canvas 2D, and adapter-specific transports for VS Code and browser WebSocket clients.
 
@@ -188,6 +227,9 @@ npm run e2e
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and [e2e/README.md](e2e/README.md) for the end-to-end suite.
 
+Standalone browser specs run headlessly. VS Code end-to-end specs open real windows
+and steal focus; obtain explicit approval before running them locally.
+
 ### Hosted Test Reports
 
 Build the combined Allure report locally and stage it for Vercel:
@@ -205,9 +247,9 @@ The staged output serves the combined `e2e`, `server`, and `webview` Allure repo
 
 ## Troubleshooting
 
-- **Standalone will not start:** verify Node.js 20+, omit `--port` to choose a free port, or select another fixed port.
-- **An agent is missing:** confirm **Settings → Instant Detection (Hooks)** is on and that the session belongs to the current workspace. Enable **Watch All Sessions** if needed.
-- **The UI looks disconnected:** open **Settings → Debug View** to inspect the server connection, transcript path, and latest agent data.
+- **Standalone will not start:** use Node.js 24, omit `--port` to choose a free port, or select another fixed port.
+- **An agent is missing:** open **+ Agent → Archived** and assign its session a character name first. For live activity, confirm **Settings → Instant Detection (Hooks)** is on, restart CLI sessions after installing hooks, and check enrollment (`PIXEL_AGENTS_COPILOT=1`) and `node` on the CLI's `PATH`. Enable **Watch All Sessions** for other workspaces. Native Copilot Chat is not tracked.
+- **The UI looks disconnected:** open **Settings → Debug View** to inspect whether hooks have arrived, the project path, and the latest agent data. No transcript connection is expected.
 - **Extension and standalone are both running:** this is supported. Current versions create separate files under `~/.pixel-agents/servers/`; stopping one does not remove the other.
 
 ## Community & Contributing

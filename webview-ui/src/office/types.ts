@@ -57,6 +57,7 @@ export interface Seat {
 }
 
 export interface FurnitureInstance {
+  uid?: string;
   sprite: SpriteData;
   /** Pixel x (top-left) */
   x: number;
@@ -200,6 +201,11 @@ export interface Character {
   wanderLimit: number;
   /** Whether the agent is actively working */
   isActive: boolean;
+  isArchived?: boolean;
+  archivedSeatId?: string | null;
+  archiveCageId?: string;
+  archivePosition?: { x: number; y: number };
+  archiveParkingError?: string;
   /** Assigned seat uid, or null if no seat */
   seatId: string | null;
   /** Active speech bubble type, or null if none showing */

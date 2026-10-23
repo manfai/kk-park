@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Named Copilot sessions
+
+- **+ Agent** opens a searchable session manager. All unnamed sessions remain
+  archived, even while running; assigning a local character name shows them.
+  Named characters now require confirmation before Archive: stop only their
+  managed CLI and confine them standing behind the bars of the nearest reachable
+  empty Jail Cage, retaining their name and conversation. Each placed cage holds
+  one character; missing/full cages prevent Archive. Restore/resume releases the
+  cage. External terminals are not stopped.
+- Character identity follows the immutable Copilot session, not a project or
+  terminal. Named offline sessions retain their appearance and seats; opening
+  one resumes its exact session ID. Running external terminals are observation-only.
+- History discovery imports initialization metadata only, never conversation
+  text or titles. The archived catalogue and session controls require write access.
+
+### Copilot-only migration
+
+- This fork now tracks GitHub Copilot CLI through consent-gated, explicitly
+  enrolled hooks in VS Code terminals and the standalone browser office.
+- Removed the former provider, transcript scanning and heuristic fallback, and
+  server-side child-agent, team, and context tracking. Generic protocol/UI
+  variants remain dormant; native Copilot Chat is not integrated.
+- Existing release entries and contributor credits below describe historical
+  releases, not the capabilities of this source tree. Build this checkout to use
+  unpublished changes; see [README.md](README.md).
+
 ## v1.5.0
 
 ### Features

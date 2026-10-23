@@ -12,7 +12,7 @@ const REQUIRED_FILES = [
   'extension/package.json',
   'extension/dist/extension.js',
   'extension/dist/cli.js',
-  'extension/dist/hooks/claude-hook.js',
+  'extension/dist/hooks/copilot-hook.js',
   'extension/dist/webview/index.html',
 ];
 const FORBIDDEN_PREFIXES = [

@@ -175,9 +175,9 @@ export function SessionsModal({
       <div data-testid="sessions-manager" className="p-6 flex flex-col gap-8">
         <p className="text-sm text-text-muted m-0">
           One session, one character. Give a session a local name to show it in the office.
-          Archiving confines a named character inside the nearest reachable empty Jail Cage (one
-          character per cage) and stops its managed CLI. Names and conversation history stay
-          unchanged. Unnamed sessions remain hidden.
+          Archiving confines a named character inside the nearest reachable free cage position and
+          stops its managed CLI. Small cages hold one character; large cages hold up to five. Names
+          and conversation history stay unchanged. Unnamed sessions remain hidden.
         </p>
         {rejection && (
           <p role="alert" className="text-status-error break-words m-0">

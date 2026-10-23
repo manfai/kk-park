@@ -100,8 +100,21 @@ describe('session manager', () => {
             footprintH: 3,
             isDesk: false,
           },
+          {
+            id: 'JAIL_CAGE_LARGE',
+            label: 'Large Jail Cage',
+            category: 'decor',
+            width: 160,
+            height: 48,
+            footprintW: 10,
+            footprintH: 3,
+            isDesk: false,
+          },
         ],
-        sprites: { JAIL_CAGE: Array.from({ length: 48 }, () => Array(32).fill('')) },
+        sprites: {
+          JAIL_CAGE: Array.from({ length: 48 }, () => Array(32).fill('')),
+          JAIL_CAGE_LARGE: Array.from({ length: 48 }, () => Array(160).fill('')),
+        },
       });
     });
 
@@ -248,6 +261,52 @@ describe('session manager', () => {
       office.setAgentArchived(1, false);
       expect(office.characters.get(1)?.seatId).toBe('desk');
       expect(office.seats.get('desk')?.assigned).toBe(true);
+    });
+
+    function officeWithLargeCage(): OfficeState {
+      const office = new OfficeState({
+        version: 1,
+        cols: 20,
+        rows: 10,
+        tiles: Array(200).fill(TileType.FLOOR_1),
+        furniture: [{ uid: 'shared', type: 'JAIL_CAGE_LARGE', col: 5, row: 3 }],
+      });
+      for (let id = 1; id <= 6; id++) {
+        office.addAgent(id, 0, 0, undefined, true);
+        const ch = office.characters.get(id)!;
+        ch.tileCol = 18;
+        ch.tileRow = 5;
+        ch.path = [];
+      }
+      return office;
+    }
+
+    it('reserves five distinct positions in one large cage and rejects a sixth until release', () => {
+      const office = officeWithLargeCage();
+      for (let id = 1; id <= 5; id++) office.setAgentArchived(id, true);
+      const occupants = [...office.characters.values()].filter((ch) => ch.isArchived);
+      expect(occupants.every((ch) => ch.archiveCageId === 'shared')).toBe(true);
+      expect(new Set(occupants.map((ch) => ch.archiveCageSlot)).size).toBe(5);
+      expect(office.archivePath(6)).toBeNull();
+      for (let tick = 0; tick < 100; tick++) office.update(0.1);
+      office.rebuildFromLayout(office.getLayout());
+      office.update(0.1);
+      expect(occupants.map((ch) => ch.x).sort((a, b) => a - b)).toEqual([96, 128, 160, 192, 224]);
+      expect(occupants.every((ch) => ch.y === 88 && ch.state === CharacterState.IDLE)).toBe(true);
+      const released = office.characters.get(2)!.archiveCageSlot;
+      office.setAgentArchived(2, false);
+      expect(office.archivePath(6)).not.toBeNull();
+      office.setAgentArchived(6, true);
+      expect(office.characters.get(6)?.archiveCageSlot).toBe(released);
+      expect(office.characters.get(2)?.archiveCageSlot).toBeUndefined();
+    });
+
+    it('chooses the nearest free position rather than the first position of a shared cage', () => {
+      const office = officeWithLargeCage();
+      office.setAgentArchived(1, true);
+      expect(office.characters.get(1)?.archiveCageSlot).toBe(4);
+      office.setAgentArchived(2, true);
+      expect(office.characters.get(2)?.archiveCageSlot).toBe(3);
     });
   });
 });

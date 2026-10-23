@@ -155,7 +155,7 @@ test.describe('Standalone / session-first office', () => {
       await expect(sessionRow(page, newId)).toContainText('Disconnected');
       await closeSessionsManager(page);
       await expect(page.getByTitle('New Reader', { exact: true })).toHaveCount(0);
-      await expectOverlayCount(page, 2);
+      await expectOverlayCount(page, 1);
       await expect(page.locator('.xterm')).toHaveCount(0);
       await expect
         .poll(() => {

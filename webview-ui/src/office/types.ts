@@ -204,6 +204,7 @@ export interface Character {
   isArchived?: boolean;
   archivedSeatId?: string | null;
   archiveCageId?: string;
+  archiveCageSlot?: number;
   archivePosition?: { x: number; y: number };
   archiveParkingError?: string;
   /** Assigned seat uid, or null if no seat */

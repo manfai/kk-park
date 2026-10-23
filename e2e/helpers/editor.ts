@@ -23,6 +23,7 @@ export interface TestHooksWindow extends Window {
       id: number;
       isArchived?: boolean;
       archiveCageId?: string;
+      archiveCageSlot?: number;
       x: number;
       y: number;
       tileCol: number;

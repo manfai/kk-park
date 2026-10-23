@@ -917,13 +917,13 @@ function App() {
             ?
           </p>
           <p>
-            The character will be confined inside the nearest reachable empty Jail Cage, one
-            character per cage. Its managed Copilot CLI will stop. The name and conversation history
-            are kept; external terminals are not stopped.
+            The character will enter the nearest reachable free cage position. A Jail Cage holds one
+            character; a Large Jail Cage holds up to five. Its managed Copilot CLI will stop. The
+            name and conversation history are kept; external terminals are not stopped.
           </p>
           {!archiveCanPark && (
             <p role="alert" className="text-status-error">
-              No reachable free Jail Cage. Place an empty Jail Cage in Layout → Furniture → Decor
+              No reachable free Jail Cage position. Place a cage in Layout → Furniture → Decor
               before archiving.
             </p>
           )}

@@ -1,6 +1,6 @@
 import { pickDiversePalette } from '../../../../core/src/paletteUtils.js';
 import {
-  ARCHIVE_CAGE_TYPE,
+  ARCHIVE_CAGE_CAPACITIES,
   AUTO_ON_FACING_DEPTH,
   AUTO_ON_SIDE_DEPTH,
   CHARACTER_HIT_HALF_WIDTH,
@@ -529,6 +529,7 @@ export class OfficeState {
 
   private archiveDestination(id: number): {
     cageId: string;
+    slot: number;
     position: { x: number; y: number };
     path: Array<{ col: number; row: number }>;
   } | null {
@@ -536,50 +537,53 @@ export class OfficeState {
     if (!ch) return null;
     let nearest: ReturnType<OfficeState['archiveDestination']> = null;
     for (const cage of this.layout.furniture) {
-      if (cage.type !== ARCHIVE_CAGE_TYPE) continue;
+      const capacity = ARCHIVE_CAGE_CAPACITIES[cage.type];
+      if (!capacity) continue;
       const entry = getCatalogEntry(cage.type);
       if (!entry) continue;
-      const contains = (col: number, row: number) =>
-        col >= cage.col &&
-        col < cage.col + entry.footprintW &&
-        row >= cage.row &&
-        row < cage.row + entry.footprintH;
-      const occupied = [...this.characters.values()].some((other) => {
-        if (other.id === id || other.matrixEffect === 'despawn') return false;
-        const destination = other.path[other.path.length - 1];
-        return (
-          other.archiveCageId === cage.uid ||
-          contains(other.tileCol, other.tileRow) ||
-          (destination && contains(destination.col, destination.row))
-        );
-      });
-      if (occupied) continue;
-
       // Only the selected cage (and the character's old cage when leaving) opens for this route.
       const blocked = getBlockedTiles(
         this.layout.furniture.filter(
           (item) => item.uid !== cage.uid && item.uid !== ch.archiveCageId,
         ),
       );
-      const col = cage.col + Math.floor((entry.footprintW - 1) / 2);
-      const row = cage.row + entry.footprintH - 1;
-      if (!isWalkable(col, row, this.tileMap, blocked)) continue;
-      const path = findNearestPath(
-        ch.tileCol,
-        ch.tileRow,
-        this.tileMap,
-        blocked,
-        new Set([`${col},${row}`]),
-      );
-      if (path === null || (nearest && nearest.path.length <= path.length)) continue;
-      nearest = {
-        cageId: cage.uid,
-        position: {
-          x: (cage.col + entry.footprintW / 2) * TILE_SIZE,
-          y: row * TILE_SIZE + TILE_SIZE / 2,
-        },
-        path,
-      };
+      const slotWidth = entry.footprintW / capacity;
+      for (let slot = 0; slot < capacity; slot++) {
+        const contains = (col: number, row: number) =>
+          col >= cage.col + slot * slotWidth &&
+          col < cage.col + (slot + 1) * slotWidth &&
+          row >= cage.row &&
+          row < cage.row + entry.footprintH;
+        const occupied = [...this.characters.values()].some((other) => {
+          if (other.id === id || other.matrixEffect === 'despawn') return false;
+          if (other.archiveCageId === cage.uid) return (other.archiveCageSlot ?? 0) === slot;
+          const destination = other.path[other.path.length - 1];
+          return (
+            contains(other.tileCol, other.tileRow) ||
+            (destination && contains(destination.col, destination.row))
+          );
+        });
+        if (occupied) continue;
+
+        const centerCol = cage.col + (slot + 0.5) * slotWidth;
+        const col = Math.floor(centerCol - 0.5);
+        const row = cage.row + entry.footprintH - 1;
+        if (!isWalkable(col, row, this.tileMap, blocked)) continue;
+        const path = findNearestPath(
+          ch.tileCol,
+          ch.tileRow,
+          this.tileMap,
+          blocked,
+          new Set([`${col},${row}`]),
+        );
+        if (path === null || (nearest && nearest.path.length <= path.length)) continue;
+        nearest = {
+          cageId: cage.uid,
+          slot,
+          position: { x: centerCol * TILE_SIZE, y: row * TILE_SIZE + TILE_SIZE / 2 },
+          path,
+        };
+      }
     }
     return nearest;
   }
@@ -588,6 +592,7 @@ export class OfficeState {
     const destination = this.archiveDestination(ch.id);
     const path = destination?.path;
     ch.archiveCageId = destination?.cageId;
+    ch.archiveCageSlot = destination?.slot;
     ch.archivePosition = destination?.position;
     ch.path = path ?? [];
     ch.moveProgress = 0;
@@ -645,6 +650,7 @@ export class OfficeState {
         preferred && !preferred.assigned ? ch.archivedSeatId : this.findFreeSeat(ch.directoryName);
       ch.archivedSeatId = undefined;
       ch.archiveCageId = undefined;
+      ch.archiveCageSlot = undefined;
       ch.archivePosition = undefined;
       if (seatId) this.reassignSeat(id, seatId);
     }

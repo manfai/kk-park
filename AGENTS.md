@@ -31,11 +31,12 @@ unrelated terminal as a fallback. Names and seats are adapter-local.
 
 Archiving a named character is separate from clearing its name: confirm first,
 persist its archive flag, stop only its exact managed CLI, and confine it inside the
-nearest reachable empty placed Jail Cage. Reserve one entire cage per character,
-including while walking there. Keep its name/history and standing pose behind bars,
+nearest reachable free position in a placed cage. Jail Cage has one position;
+Large Jail Cage has five. Reserve each position while walking there. Keep its
+name/history and standing pose behind bars, without name cards or floating labels,
 including across reloads; hook activity must not unpark it. Unnamed sessions stay
 hidden. External terminals are never stopped. Missing or full cages must be explicit
-and must prevent Archive. Restore/resume releases the cage.
+and must prevent Archive. Restore/resume releases only that character's position.
 
 History discovery reads only initialization metadata from the first record of
 Copilot's session files; never import prompts, results, titles, or infer activity

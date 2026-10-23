@@ -91,8 +91,7 @@ test.describe('Standalone / terminal', () => {
         .getByRole('button', { name: 'Archive character', exact: true })
         .click();
       await expect(page.getByTitle('Agent 1')).toHaveCount(0);
-      await expectOverlayCount(page, 1);
-      await expectOverlayVisible(page, 'ARCHIVED');
+      await expectOverlayCount(page, 0);
       await expect(page.locator('.xterm')).toHaveCount(0);
     });
   });

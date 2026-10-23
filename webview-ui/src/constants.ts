@@ -220,8 +220,10 @@ export const GREETER_ID = -1_000_000_000;
  *  on top of it must cover it rather than slide underneath. */
 export const INTRO_BUBBLE_Z_INDEX = 45;
 export const ARCHIVE_CONFIRMATION_Z_INDEX = 60;
-export const ARCHIVE_CAGE_TYPE = 'JAIL_CAGE';
-export const ARCHIVE_LABEL_GAP_PX = 8;
+export const ARCHIVE_CAGE_CAPACITIES: Readonly<Record<string, number>> = {
+  JAIL_CAGE: 1,
+  JAIL_CAGE_LARGE: 5,
+};
 /** ToolOverlay stacking: status label panels (selected one on top), then the
  *  characters' speech bubbles above every label — all below the Intro bubble. */
 export const OVERLAY_LABEL_Z_INDEX = 41;

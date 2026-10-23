@@ -1,0 +1,14 @@
+{
+  "id": "JAIL_CAGE_LARGE",
+  "name": "Large Jail Cage",
+  "category": "decor",
+  "type": "asset",
+  "file": "JAIL_CAGE_LARGE.png",
+  "width": 160,
+  "height": 48,
+  "footprintW": 10,
+  "footprintH": 3,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

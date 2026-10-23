@@ -8,9 +8,11 @@
   archived, even while running; assigning a local character name shows them.
   Named characters now require confirmation before Archive: stop only their
   managed CLI and confine them standing behind the bars of the nearest reachable
-  empty Jail Cage, retaining their name and conversation. Each placed cage holds
-  one character; missing/full cages prevent Archive. Restore/resume releases the
-  cage. External terminals are not stopped.
+  free cage position, retaining their name and conversation. Jail Cage holds one;
+  the five-times-wide Large Jail Cage holds up to five in separate positions.
+  Archived characters have no name cards or floating labels. Missing/full cages
+  prevent Archive; restore/resume frees only the released character's position.
+  External terminals are not stopped.
 - Character identity follows the immutable Copilot session, not a project or
   terminal. Named offline sessions retain their appearance and seats; opening
   one resumes its exact session ID. Running external terminals are observation-only.

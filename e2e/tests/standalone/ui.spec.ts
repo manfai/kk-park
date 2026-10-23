@@ -74,11 +74,9 @@ test.describe('Standalone / UI', () => {
       await expectOverlayVisible(page, 'Reading close-agent.ts');
       await closeAgentFromOverlay(page, { text: 'Reading close-agent.ts' });
       await confirmation.getByRole('button', { name: 'Archive character', exact: true }).click();
-      await expectOverlayCount(page, 1);
-      await expectOverlayVisible(page, 'ARCHIVED');
+      await expectOverlayCount(page, 0);
       await expect(page.getByTitle('Archive Me', { exact: true })).toHaveCount(0);
-      await expect(page.getByTestId('agent-overlay')).toHaveText('ARCHIVED');
-      await expect(page.getByTestId('archived-label')).toHaveCSS('font-size', '44px');
+      await expect(page.getByText('ARCHIVED', { exact: true })).toHaveCount(0);
       const parkedCharacter = () =>
         page.evaluate(() =>
           (window as TestHooksWindow).__pixelAgentsTestHooks
@@ -103,8 +101,7 @@ test.describe('Standalone / UI', () => {
       await expect.poll(parkedCharacter).toEqual(parked);
       await setSettings(page, { alwaysShowLabels: false });
       await page.reload();
-      await expectOverlayVisible(page, 'ARCHIVED');
-      await expect(page.getByTestId('agent-overlay')).toHaveText('ARCHIVED');
+      await expectOverlayCount(page, 0);
       await expect(page.getByTitle('Archive Me', { exact: true })).toHaveCount(0);
       await expect.poll(async () => (await parkedCharacter())?.state).toBe('idle');
       expect((await parkedCharacter())?.id).toBe(parked!.id);
@@ -112,7 +109,7 @@ test.describe('Standalone / UI', () => {
       await page.screenshot({ path: test.info().outputPath('archived-inside-cage.png') });
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(page.getByTitle('Archive Me', { exact: true })).toHaveCount(0);
-      await expect(page.getByTestId('archived-label')).toBeVisible();
+      await expect(page.getByText('ARCHIVED', { exact: true })).toHaveCount(0);
       await page.screenshot({ path: test.info().outputPath('archived-mobile.png') });
       await page.setViewportSize({ width: 1280, height: 800 });
       await setSettings(page, { alwaysShowLabels: true });
@@ -143,6 +140,91 @@ test.describe('Standalone / UI', () => {
       expect((await parkedCharacter())?.archiveCageId).toBe('archive-cage');
       const messages = await standalone.drainMessages();
       expect(messages.some((message) => message.type === 'agentClosed')).toBe(false);
+    });
+  });
+
+  test.describe('Shared large cage', () => {
+    test.use({
+      standaloneOptions: {
+        seedLayout: buildSeedLayout({
+          cols: 20,
+          rows: 10,
+          furniture: [{ uid: 'shared-cage', type: 'JAIL_CAGE_LARGE', col: 5, row: 3 }],
+        }),
+      },
+    });
+    test('Large Jail Cage holds five characters without labels, survives reload and frees a position on restore @area:standalone', async ({
+      page,
+      standalone,
+    }) => {
+      const frame = page.mainFrame();
+      await frame.getByTitle('Edit office layout', { exact: true }).click();
+      await frame.getByTitle('Place furniture', { exact: true }).click();
+      await frame.getByRole('button', { name: 'Decor', exact: true }).click();
+      await expect(frame.getByTitle('Large Jail Cage', { exact: true })).toBeVisible();
+      await frame.getByTitle('Edit office layout', { exact: true }).click();
+
+      for (let index = 1; index <= 6; index++) {
+        const sessionId = `large-cage-${index}`;
+        await sendHookEvent(
+          standalone.hookServerConfig,
+          sessionStartStartup(sessionId, standalone.workspaceDir),
+        );
+        await nameSession(page, sessionId, `Cage Resident ${index}`, { close: false });
+      }
+      const confirmation = page.getByTestId('archive-confirmation');
+      for (let index = 1; index <= 5; index++) {
+        await sessionRow(page, `large-cage-${index}`)
+          .getByRole('button', { name: 'Archive', exact: true })
+          .click();
+        await confirmation.getByRole('button', { name: 'Archive character', exact: true }).click();
+        await expect(sessionRow(page, `large-cage-${index}`)).toContainText('Archived');
+      }
+      const occupants = () =>
+        page.evaluate(
+          () =>
+            (window as TestHooksWindow).__pixelAgentsTestHooks
+              ?.getCharacters?.()
+              .filter((ch) => ch.isArchived) ?? [],
+        );
+      await expect
+        .poll(async () => (await occupants()).filter((ch) => ch.state === 'idle').length)
+        .toBe(5);
+      const positions = await occupants();
+      expect(positions.every((ch) => ch.archiveCageId === 'shared-cage')).toBe(true);
+      expect(new Set(positions.map((ch) => ch.archiveCageSlot)).size).toBe(5);
+      expect(positions.map((ch) => ch.x).sort((a, b) => a - b)).toEqual([96, 128, 160, 192, 224]);
+      const sixth = sessionRow(page, 'large-cage-6');
+      await sixth.getByRole('button', { name: 'Archive', exact: true }).click();
+      await expect(confirmation.getByRole('alert')).toContainText('No reachable free Jail Cage');
+      await expect(
+        confirmation.getByRole('button', { name: 'Archive character', exact: true }),
+      ).toBeDisabled();
+      await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await closeSessionsManager(page);
+      await expect(page.getByText('ARCHIVED', { exact: true })).toHaveCount(0);
+      for (let index = 1; index <= 5; index++) {
+        await expect(page.getByTitle(`Cage Resident ${index}`, { exact: true })).toHaveCount(0);
+      }
+      await page.screenshot({ path: test.info().outputPath('shared-large-cage.png') });
+      await page.reload();
+      await expect
+        .poll(async () => (await occupants()).filter((ch) => ch.state === 'idle').length)
+        .toBe(5);
+      expect(new Set((await occupants()).map((ch) => ch.archiveCageSlot)).size).toBe(5);
+      await showAllSessions(page);
+      await sessionRow(page, 'large-cage-1')
+        .getByRole('button', { name: 'Restore to office', exact: true })
+        .click();
+      await expect.poll(async () => (await occupants()).length).toBe(4);
+      await sixth.getByRole('button', { name: 'Archive', exact: true }).click();
+      await confirmation.getByRole('button', { name: 'Archive character', exact: true }).click();
+      await expect(sixth).toContainText('Archived');
+      await closeSessionsManager(page);
+      await expect
+        .poll(async () => (await occupants()).filter((ch) => ch.state === 'idle').length)
+        .toBe(5);
+      await expect(page.getByTitle('Cage Resident 1', { exact: true })).toBeVisible();
     });
   });
 

@@ -2,7 +2,6 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 
 import { Button } from '../../components/ui/Button.js';
 import {
-  ARCHIVE_LABEL_GAP_PX,
   BUBBLE_FADE_DURATION_SEC,
   BUBBLE_SITTING_OFFSET_PX,
   BUBBLE_VERTICAL_OFFSET_PX,
@@ -168,36 +167,22 @@ export function ToolOverlay({
         const isSub = ch.isSubagent;
 
         if (ch.isArchived) {
-          const cage =
-            ch.path.length === 0
-              ? officeState.furniture.find((item) => item.uid === ch.archiveCageId)
-              : undefined;
+          if (!ch.archiveParkingError) return null;
           return (
             <div
               key={id}
               className="absolute flex flex-col items-center -translate-x-1/2 -translate-y-full pointer-events-none select-none"
               style={{
                 left: project.toScreenX(ch.x),
-                top:
-                  project.toScreenY(cage?.y ?? ch.y - TOOL_OVERLAY_VERTICAL_OFFSET) -
-                  ARCHIVE_LABEL_GAP_PX,
+                top: project.toScreenY(ch.y - TOOL_OVERLAY_VERTICAL_OFFSET),
                 zIndex: OVERLAY_LABEL_Z_INDEX,
               }}
               data-testid="agent-overlay"
               data-agent-id={id}
             >
-              <span
-                className="text-3xl leading-none text-status-error whitespace-nowrap"
-                style={{ textShadow: 'var(--shadow-pixel)' }}
-                data-testid="archived-label"
-              >
-                ARCHIVED
+              <span role="alert" className="text-xs text-status-error text-center max-w-2xs">
+                {ch.archiveParkingError}
               </span>
-              {ch.archiveParkingError && (
-                <span role="alert" className="text-xs text-status-error text-center max-w-2xs">
-                  {ch.archiveParkingError}
-                </span>
-              )}
             </div>
           );
         }

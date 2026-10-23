@@ -65,7 +65,7 @@ Start a new agent from the office.
 _Avoid_: spawn (that's the character-level visual event), create
 
 **Archive**:
-Confine a named character inside the nearest reachable empty Jail Cage after confirmation, keeping its name and conversation history. One archived character per cage; a character walking there already reserves it. Its managed CLI stops; external terminals are not stopped. Archived characters stand behind the bars instead of working or wandering. Missing, occupied, or unreachable cages prevent Archive. Unnamed sessions remain hidden and do not occupy cages.
+Confine a named character in the nearest reachable free cage position after confirmation, keeping its name and conversation history. Jail Cage holds one character; Large Jail Cage is five times as wide and holds up to five in separate positions. A character walking there already reserves its position. Its managed CLI stops; external terminals are not stopped. Archived characters stand behind the bars without name cards or floating archive labels, instead of working or wandering. Missing, full, or unreachable cages prevent Archive. Unnamed sessions remain hidden and do not occupy cages.
 
 **Resume**:
 Open an offline agent's exact Copilot session in a new managed terminal, preserving its character ID, name, appearance, and seat.

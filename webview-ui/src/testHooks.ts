@@ -17,6 +17,7 @@ declare global {
         isGreeter?: boolean;
         isArchived?: boolean;
         archiveCageId?: string;
+        archiveCageSlot?: number;
         x: number;
         y: number;
         tileCol: number;
@@ -161,6 +162,7 @@ export function installTestHooks(officeStateRef: { current: OfficeState | null }
       isGreeter: ch.isGreeter,
       isArchived: ch.isArchived,
       archiveCageId: ch.archiveCageId,
+      archiveCageSlot: ch.archiveCageSlot,
       x: ch.x,
       y: ch.y,
       tileCol: ch.tileCol,
